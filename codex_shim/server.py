@@ -53,6 +53,7 @@ class ShimServer:
         app.router.add_get("/v1/models", self.models)
         app.router.add_post("/v1/chat/completions", self.chat_completions)
         app.router.add_post("/v1/responses", self.responses)
+        app.router.add_post("/v1/responses/compact", self.responses_compact)
         app.router.add_get("/picker", self.picker_page)
         app.router.add_get("/api/models", self.api_models)
         app.router.add_post("/api/switch", self.switch_model)
@@ -154,6 +155,26 @@ class ShimServer:
         if route.is_anthropic:
             forwarded = responses_to_anthropic(body, route.model, route.max_output_tokens)
             return await self._post_anthropic(request, route, forwarded, as_responses=True)
+        raise web.HTTPBadGateway(text=f"Unsupported model provider: {route.provider}")
+
+    async def responses_compact(self, request: web.Request) -> web.StreamResponse:
+        body = await request.json()
+        _log_incoming_request("/v1/responses/compact", body)
+        model = str(body.get("model") or "")
+        if model == CHATGPT_MODEL_SLUG or model.startswith("openai-gpt-5-5"):
+            return await self._chatgpt_compact_passthrough(request, body)
+        route = self._route(body)
+        compact_body = _compact_request_body(body, route.model)
+        if route.is_openai_chat:
+            forwarded = responses_to_chat(compact_body, route.model)
+            forwarded["stream"] = False
+            response = await self._post_openai_chat(request, route, forwarded, as_responses=True)
+            return await _as_compact_response(response, route.slug)
+        if route.is_anthropic:
+            forwarded = responses_to_anthropic(compact_body, route.model, route.max_output_tokens)
+            forwarded["stream"] = False
+            response = await self._post_anthropic(request, route, forwarded, as_responses=True)
+            return await _as_compact_response(response, route.slug)
         raise web.HTTPBadGateway(text=f"Unsupported model provider: {route.provider}")
 
     def _needs_image_gen(self, body: dict[str, Any]) -> bool:
@@ -378,6 +399,39 @@ class ShimServer:
             except Exception:
                 pass
             return response
+
+    async def _chatgpt_compact_passthrough(self, request: web.Request, body: dict[str, Any]) -> web.StreamResponse:
+        auth_path = DEFAULT_CODEX_AUTH.expanduser()
+        try:
+            auth = json.loads(auth_path.read_text())
+        except FileNotFoundError:
+            raise web.HTTPUnauthorized(text="~/.codex/auth.json not found")
+        tokens = auth.get("tokens") or {}
+        access_token = tokens.get("access_token")
+        account_id = tokens.get("account_id") or ""
+        if not access_token:
+            raise web.HTTPUnauthorized(text="auth.json has no access_token")
+        forwarded = _sanitize_chatgpt_passthrough_body(body)
+        original_model = str(forwarded.get("model") or "")
+        forwarded["model"] = CHATGPT_MODEL_SLUG
+        forwarded.pop("stream", None)
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            "OpenAI-Beta": "responses=2026-02-06",
+            "originator": "codex_cli_rs",
+            "chatgpt-account-id": account_id,
+            "session_id": request.headers.get("session_id", ""),
+        }
+        url = "https://chatgpt.com/backend-api/codex/responses/compact"
+        async with ClientSession(timeout=self.timeout) as session:
+            upstream = await session.post(url, json=forwarded, headers=headers)
+            if upstream.status >= 400:
+                return await _error_response(upstream)
+            payload = await upstream.json(content_type=None)
+        _rewrite_response_model(payload, original_model or None)
+        return web.json_response(payload)
 
     def _route(self, body: dict[str, Any]) -> ShimModel:
         requested = str(body.get("model") or "")
@@ -1148,6 +1202,80 @@ def _anthropic_stream_to_chat_chunk(event: dict[str, Any], model: str) -> dict[s
         if delta.get("type") == "text_delta":
             content = delta.get("text", "")
     return {"object": "chat.completion.chunk", "model": model, "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": None}]}
+
+
+def _compact_request_body(body: dict[str, Any], upstream_model: str) -> dict[str, Any]:
+    instructions = body.get("instructions") or _default_compact_instructions()
+    return {
+        "model": upstream_model,
+        "instructions": instructions,
+        "input": body.get("input") or [],
+        "max_output_tokens": body.get("max_output_tokens") or body.get("max_tokens") or 4096,
+        "stream": False,
+    }
+
+
+def _default_compact_instructions() -> str:
+    return (
+        "Compact the conversation into a concise state handoff for the next Codex turn. "
+        "Preserve the active task, user requirements, important file paths, commands already run, "
+        "tool results, decisions, blockers, and the latest state. Omit filler and repeated text."
+    )
+
+
+async def _as_compact_response(response: web.StreamResponse, model: str) -> web.Response:
+    if not isinstance(response, web.Response) or response.status >= 400:
+        return response
+    try:
+        payload = json.loads(response.text or "{}")
+    except json.JSONDecodeError:
+        return response
+    output = payload.get("output") if isinstance(payload, dict) else None
+    summary = _compact_summary_from_output(output)
+    compacted = _compact_response_payload(model, summary, payload.get("usage") if isinstance(payload, dict) else None)
+    return web.json_response(compacted)
+
+
+def _compact_summary_from_output(output: Any) -> str:
+    parts: list[str] = []
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "message":
+                content = item.get("content") or []
+                if isinstance(content, list):
+                    for part in content:
+                        if isinstance(part, dict) and part.get("text"):
+                            parts.append(str(part["text"]))
+            elif item.get("type") == "output_text" and item.get("text"):
+                parts.append(str(item["text"]))
+    return "\n".join(part for part in parts if part).strip()
+
+
+def _compact_response_payload(model: str, summary: str, usage: Any = None) -> dict[str, Any]:
+    now = int(time.time())
+    response_id = f"resp_compact_{now}"
+    text = summary or "No prior conversation state was available to compact."
+    payload = {
+        "id": response_id,
+        "object": "response",
+        "created_at": now,
+        "status": "completed",
+        "model": model,
+        "output": [
+            {
+                "id": f"msg_compact_{now}",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": text, "annotations": []}],
+            }
+        ],
+    }
+    if usage is not None:
+        payload["usage"] = usage
+    return payload
 
 
 async def _error_response(upstream, *, slug: str | None = None) -> web.Response:

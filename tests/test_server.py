@@ -226,6 +226,108 @@ async def test_responses_routes_to_openai_chat(tmp_path):
     await upstream_client.close()
 
 
+async def test_responses_compact_routes_to_openai_chat_and_returns_compacted_window(tmp_path):
+    captured = {}
+
+    async def chat(request):
+        captured["body"] = await request.json()
+        return web.json_response(
+            {
+                "id": "chatcmpl_compact",
+                "choices": [{"message": {"role": "assistant", "content": "Task: keep implementing compact support."}}],
+                "usage": {"total_tokens": 11},
+            }
+        )
+
+    upstream = web.Application()
+    upstream.router.add_post("/v1/chat/completions", chat)
+    upstream_client = TestClient(TestServer(upstream))
+    await upstream_client.start_server()
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "customModels": [
+                    {
+                        "model": "real-openai",
+                        "displayName": "Real OpenAI",
+                        "provider": "openai",
+                        "baseUrl": str(upstream_client.make_url("/v1")),
+                        "apiKey": "secret",
+                    }
+                ]
+            }
+        )
+    )
+    shim_client = TestClient(TestServer(ShimServer(settings).app()))
+    await shim_client.start_server()
+
+    resp = await shim_client.post(
+        "/v1/responses/compact",
+        json={
+            "model": "real-openai",
+            "input": [
+                {"role": "user", "content": "implement compact"},
+                {"type": "function_call_output", "call_id": "call_1", "output": "tests pass"},
+            ],
+            "service_tier": "priority",
+            "stream": True,
+        },
+    )
+    assert resp.status == 200
+    payload = await resp.json()
+    assert payload["status"] == "completed"
+    assert payload["model"] == "real-openai"
+    assert payload["output"][0]["content"][0]["text"] == "Task: keep implementing compact support."
+    assert payload["usage"] == {"total_tokens": 11}
+    assert captured["body"]["model"] == "real-openai"
+    assert captured["body"]["stream"] is False
+    assert "service_tier" not in captured["body"]
+    assert "Compact the conversation" in captured["body"]["messages"][0]["content"]
+
+    await shim_client.close()
+    await upstream_client.close()
+
+
+async def test_responses_compact_chatgpt_passthrough_uses_compact_endpoint(monkeypatch, tmp_path, auth_present):
+    captured = {}
+
+    class FakeUpstream:
+        status = 200
+        content_type = "application/json"
+
+        async def json(self, content_type=None):
+            return {"id": "resp_compact", "model": "gpt-5.5", "output": [{"type": "message", "model": "gpt-5.5"}]}
+
+        def release(self):
+            pass
+
+    async def fake_post(self, url, json=None, headers=None):
+        captured["url"] = url
+        captured["body"] = json
+        captured["headers"] = headers
+        return FakeUpstream()
+
+    monkeypatch.setattr("codex_shim.server.ClientSession.post", fake_post)
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"customModels": []}))
+    shim_client = TestClient(TestServer(ShimServer(settings).app()))
+    await shim_client.start_server()
+
+    resp = await shim_client.post("/v1/responses/compact", json={"model": "openai-gpt-5-5-codex-max", "input": "hi", "stream": True})
+    assert resp.status == 200
+    payload = await resp.json()
+    assert payload["model"] == "openai-gpt-5-5-codex-max"
+    assert payload["output"][0]["model"] == "openai-gpt-5-5-codex-max"
+    assert captured["url"] == "https://chatgpt.com/backend-api/codex/responses/compact"
+    assert captured["body"]["model"] == "gpt-5.5"
+    assert "stream" not in captured["body"]
+    assert captured["headers"]["Accept"] == "application/json"
+
+    await shim_client.close()
+
+
 async def test_health_and_models_include_chatgpt_passthrough_when_auth_present(tmp_path, auth_present):
     settings = tmp_path / "settings.json"
     settings.write_text(json.dumps({"customModels": []}))

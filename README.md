@@ -552,17 +552,49 @@ This is the piece that makes the shim useful for real Codex runs instead of only
 text chat. A model can ask Codex to run tools, Codex sends the tool output back
 through the shim, and the upstream model continues the same loop.
 
+Native Responses-only tools now have BYOK fallbacks:
+
+| Responses tool | Chat/Anthropic fallback |
+|---|---|
+| `computer_use` / `computer_use_preview` | `computer_use` function with `{action, x, y, text, ...}` |
+| `web_search` / `web_search_preview` | `web_search` function with `{query, ...}` |
+| `apply_patch` | `apply_patch` function with `{patch, ...}` |
+| `local_shell` / `shell` | `local_shell` function with `{command, ...}` |
+| Codex MCP functions | Passed through as normal function tools |
+
+That keeps BYOK models inside the Codex agent loop even when the upstream API is
+chat-completions or Anthropic Messages instead of native Responses. ChatGPT
+passthrough remains the highest-fidelity path for first-party hosted tool item
+shapes, but BYOK routes no longer drop those tools.
+
 Known edge cases:
 
-- Native Responses-only tool types such as freeform `apply_patch`, hosted
-  `web_search`, or `computer_use` are only fully native on the ChatGPT
-  passthrough path. Chat-completions and Anthropic upstreams receive function
-  tools after translation.
+- BYOK native-tool fallbacks depend on the Codex client/harness recognizing and
+  executing the fallback function call. The shim translates tool schemas and
+  round-trips tool outputs; it does not execute computer, shell, patch, or MCP
+  actions itself.
 - Some OpenAI-compatible providers advertise tool calls but stream malformed
   JSON arguments. The shim preserves deltas; the provider still has to emit
   valid JSON by the end of the call.
 - If a provider ignores `parallel_tool_calls`, Codex may still request one tool
   at a time. That is an upstream behavior, not a catalog issue.
+
+---
+
+## Compaction
+
+Codex can compact long sessions through `POST /v1/responses/compact`.
+
+| route | behavior |
+|---|---|
+| ChatGPT passthrough (`gpt-5.5` / `openai-gpt-5-5*`) | Forwards to ChatGPT's native `/backend-api/codex/responses/compact` endpoint and rewrites returned model metadata back to the requested shim slug. |
+| BYOK OpenAI/chat-completions providers | Sends a non-streaming summarization request through `/chat/completions`, then returns a Responses-shaped compacted window whose `output` can be used as the next `input`. |
+| BYOK Anthropic providers | Sends a non-streaming compact request through `/messages`, then returns the same Responses-shaped compacted window. |
+
+The BYOK path intentionally strips provider-hostile fields such as `stream` and
+`service_tier` before forwarding. It preserves the practical Codex behavior — a
+smaller next context window — without pretending third-party chat APIs can emit
+OpenAI's opaque encrypted compaction items.
 
 ---
 
@@ -587,10 +619,10 @@ What that means in practice:
 - **Images/screenshots** can pass to providers that accept images. Set
   `noImageSupport: true` for text-only upstreams so Codex does not send image
   content they cannot parse.
-- **Computer-use/native hosted tools** should use the ChatGPT passthrough path
-  for best fidelity. BYOK chat/Anthropic routes can still participate in Codex
-  tool loops, but hosted Responses-only tool item types are not equivalent to
-  normal function tools.
+- **Computer-use/native hosted tools** use native Responses item types on the
+  ChatGPT passthrough path. BYOK chat/Anthropic routes receive deterministic
+  function-tool fallbacks (`computer_use`, `web_search`, `apply_patch`,
+  `local_shell`) so they can stay in the same Codex tool loop.
 
 Codex Desktop forwards three generic MCP tools to every model:
 

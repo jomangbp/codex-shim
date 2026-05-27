@@ -76,6 +76,43 @@ def test_responses_function_tools_convert_to_chat_shape():
     ]
 
 
+def test_native_responses_tools_get_function_fallbacks_for_byok_chat():
+    body = {
+        "model": "slug",
+        "input": "Use the browser",
+        "tool_choice": {"type": "computer_use_preview"},
+        "tools": [
+            {"type": "computer_use_preview"},
+            {"type": "web_search_preview"},
+            {"type": "apply_patch"},
+            {"type": "function", "name": "list_mcp_resources", "parameters": {"type": "object"}},
+        ],
+    }
+
+    out = responses_to_chat(body, "real-model")
+
+    functions = [tool["function"] for tool in out["tools"]]
+    assert [fn["name"] for fn in functions] == ["computer_use", "web_search", "apply_patch", "list_mcp_resources"]
+    assert functions[0]["parameters"]["required"] == ["action"]
+    assert functions[1]["parameters"]["required"] == ["query"]
+    assert functions[2]["parameters"]["required"] == ["patch"]
+    assert out["tool_choice"] == {"type": "function", "function": {"name": "computer_use"}}
+
+
+def test_native_responses_tools_get_anthropic_fallbacks():
+    body = {
+        "model": "slug",
+        "input": "Search",
+        "tools": [{"type": "web_search_preview"}, {"type": "computer_use_preview"}],
+    }
+
+    out = responses_to_anthropic(body, "claude-real", 123)
+
+    assert [tool["name"] for tool in out["tools"]] == ["web_search", "computer_use"]
+    assert out["tools"][0]["input_schema"]["required"] == ["query"]
+    assert out["tools"][1]["input_schema"]["required"] == ["action"]
+
+
 def test_responses_to_anthropic_messages():
     body = {"model": "slug", "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hi"}]}]}
     out = responses_to_anthropic(body, "claude-real", 123)

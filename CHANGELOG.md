@@ -9,6 +9,14 @@ and this project does not yet follow semantic versioning (pre-1.0).
 
 ### Added
 
+- `POST /v1/responses/compact` support. ChatGPT passthrough forwards to the
+  native ChatGPT compact endpoint; BYOK OpenAI/chat and Anthropic routes run a
+  non-streaming compact summarization request and return a Responses-shaped
+  compacted window for the next Codex turn.
+- BYOK fallback schemas for native Responses-only tools: `computer_use`,
+  `web_search`, `apply_patch`, and `local_shell` now translate into ordinary
+  function tools for chat-completions / Anthropic providers instead of being
+  dropped. Codex MCP function tools continue to pass through unchanged.
 - GitHub Actions CI (`.github/workflows/ci.yml`) running pytest and
   `compileall` on Python 3.11 and 3.12.
 - `[project.optional-dependencies] dev` in `pyproject.toml` so

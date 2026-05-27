@@ -61,7 +61,9 @@ def responses_to_chat(body: dict[str, Any], upstream_model: str) -> dict[str, An
     tools = _responses_tools_to_chat_tools(body.get("tools"))
     if tools:
         chat["tools"] = tools
-        _copy_if_present(body, chat, "tool_choice")
+        tool_choice = _responses_tool_choice_to_chat(body.get("tool_choice"), body.get("tools"))
+        if tool_choice is not None:
+            chat["tool_choice"] = tool_choice
     return chat
 
 
@@ -367,36 +369,145 @@ def _responses_tools_to_chat_tools(tools: Any) -> list[dict[str, Any]]:
         return []
     converted = []
     for tool in tools:
-        if not isinstance(tool, dict):
-            continue
-        if tool.get("type") == "function":
-            if "function" in tool:
-                converted.append(tool)
-            elif "name" in tool:
-                converted.append(
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": tool.get("name"),
-                            "description": tool.get("description", ""),
-                            "parameters": tool.get("parameters")
-                            or {"type": "object", "properties": {}, "additionalProperties": True},
-                        },
-                    }
-                )
-        elif "name" in tool:
-            converted.append(
-                {
-                    "type": "function",
-                    "function": {
-                        "name": tool.get("name"),
-                        "description": tool.get("description", ""),
-                        "parameters": tool.get("parameters")
-                        or {"type": "object", "properties": {"input": {"type": "string"}}, "required": ["input"]},
-                    },
-                }
-            )
+        function_tool = _responses_tool_to_chat_function(tool)
+        if function_tool:
+            converted.append(function_tool)
     return converted
+
+
+def _responses_tool_to_chat_function(tool: Any) -> dict[str, Any] | None:
+    if not isinstance(tool, dict):
+        return None
+    if tool.get("type") == "function" and "function" in tool:
+        return tool
+    name = _responses_tool_function_name(tool)
+    if not name:
+        return None
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": tool.get("description") or _native_tool_description(tool),
+            "parameters": tool.get("parameters") or _native_tool_parameters(tool),
+        },
+    }
+
+
+def _responses_tool_function_name(tool: dict[str, Any]) -> str:
+    fn = tool.get("function")
+    if isinstance(fn, dict) and fn.get("name"):
+        return _sanitize_tool_name(str(fn["name"]))
+    if tool.get("name"):
+        return _sanitize_tool_name(str(tool["name"]))
+    tool_type = str(tool.get("type") or "").strip().lower()
+    aliases = {
+        "web_search": "web_search",
+        "web_search_preview": "web_search",
+        "computer_use": "computer_use",
+        "computer_use_preview": "computer_use",
+        "apply_patch": "apply_patch",
+        "local_shell": "local_shell",
+        "shell": "local_shell",
+    }
+    if tool_type in aliases:
+        return aliases[tool_type]
+    if tool_type.startswith("mcp"):
+        return _sanitize_tool_name(tool_type)
+    return ""
+
+
+def _sanitize_tool_name(name: str) -> str:
+    clean = re.sub(r"[^a-zA-Z0-9_-]+", "_", name.strip())[:64]
+    return clean.strip("_") or "tool"
+
+
+def _native_tool_description(tool: dict[str, Any]) -> str:
+    tool_type = str(tool.get("type") or "tool")
+    if tool_type.startswith("web_search"):
+        return "Search the web using Codex's web-search tool fallback."
+    if tool_type.startswith("computer_use"):
+        return "Request a Codex computer-use action."
+    if tool_type == "apply_patch":
+        return "Apply a unified diff patch to the working tree."
+    if tool_type in {"local_shell", "shell"}:
+        return "Run a local shell command through Codex."
+    if tool_type.startswith("mcp"):
+        return "Interact with Codex MCP resources."
+    return f"Codex tool fallback for Responses tool type {tool_type}."
+
+
+def _native_tool_parameters(tool: dict[str, Any]) -> dict[str, Any]:
+    tool_type = str(tool.get("type") or "").strip().lower()
+    if tool_type.startswith("web_search"):
+        return {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+            },
+            "required": ["query"],
+            "additionalProperties": True,
+        }
+    if tool_type.startswith("computer_use"):
+        return {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "description": "Computer action to perform"},
+                "x": {"type": "number", "description": "Screen x coordinate, when relevant"},
+                "y": {"type": "number", "description": "Screen y coordinate, when relevant"},
+                "text": {"type": "string", "description": "Text to type, when relevant"},
+            },
+            "required": ["action"],
+            "additionalProperties": True,
+        }
+    if tool_type == "apply_patch":
+        return {
+            "type": "object",
+            "properties": {"patch": {"type": "string", "description": "Unified diff patch"}},
+            "required": ["patch"],
+            "additionalProperties": True,
+        }
+    if tool_type in {"local_shell", "shell"}:
+        return {
+            "type": "object",
+            "properties": {"command": {"type": "string", "description": "Shell command to run"}},
+            "required": ["command"],
+            "additionalProperties": True,
+        }
+    return {"type": "object", "properties": {"input": {"type": "string"}}, "additionalProperties": True}
+
+
+def _responses_tool_choice_to_chat(tool_choice: Any, tools: Any) -> Any:
+    if tool_choice is None:
+        return None
+    if isinstance(tool_choice, str):
+        if tool_choice in {"auto", "none", "required"}:
+            return tool_choice
+        name = _tool_choice_name(tool_choice, tools)
+        return {"type": "function", "function": {"name": name}} if name else tool_choice
+    if isinstance(tool_choice, dict):
+        if tool_choice.get("type") == "function" and "function" in tool_choice:
+            return tool_choice
+        name = _tool_choice_name(str(tool_choice.get("name") or tool_choice.get("type") or ""), tools)
+        return {"type": "function", "function": {"name": name}} if name else tool_choice
+    return tool_choice
+
+
+def _tool_choice_name(choice: str, tools: Any) -> str:
+    choice = choice.lower().strip()
+    if isinstance(tools, list):
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            names = {
+                str(tool.get("type") or "").lower(),
+                str(tool.get("name") or "").lower(),
+            }
+            fn = tool.get("function")
+            if isinstance(fn, dict):
+                names.add(str(fn.get("name") or "").lower())
+            if choice in names:
+                return _responses_tool_function_name(tool)
+    return _sanitize_tool_name(choice)
 
 
 def _responses_tools_to_anthropic_tools(tools: Any) -> list[dict[str, Any]]:

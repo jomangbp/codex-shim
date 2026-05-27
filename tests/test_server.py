@@ -8,6 +8,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from codex_shim import server as server_module
 from codex_shim.server import (
+    ResponsesStreamState,
     ShimServer,
     _current_managed_model,
     _picker_html,
@@ -224,6 +225,86 @@ async def test_responses_routes_to_openai_chat(tmp_path):
 
     await shim_client.close()
     await upstream_client.close()
+
+
+def _sse_events(text: str) -> list[dict]:
+    events = []
+    for block in text.split("\n\n"):
+        if not block.startswith("data:"):
+            continue
+        data = block.removeprefix("data:").strip()
+        if data and data != "[DONE]":
+            events.append(json.loads(data))
+    return events
+
+
+async def test_streaming_openai_chat_response_completed_includes_usage(tmp_path):
+    async def chat(request):
+        await request.json()
+        response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+        await response.prepare(request)
+        await response.write(b'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n')
+        await response.write(b'data: {"choices":[{"delta":{}}],"usage":{"prompt_tokens":4,"completion_tokens":2,"total_tokens":6}}\n\n')
+        await response.write(b"data: [DONE]\n\n")
+        await response.write_eof()
+        return response
+
+    upstream = web.Application()
+    upstream.router.add_post("/v1/chat/completions", chat)
+    upstream_client = TestClient(TestServer(upstream))
+    await upstream_client.start_server()
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "customModels": [
+                    {
+                        "model": "real-openai",
+                        "displayName": "Real OpenAI",
+                        "provider": "openai",
+                        "baseUrl": str(upstream_client.make_url("/v1")),
+                    }
+                ]
+            }
+        )
+    )
+    shim_client = TestClient(TestServer(ShimServer(settings).app()))
+    await shim_client.start_server()
+
+    resp = await shim_client.post("/v1/responses", json={"model": "real-openai", "input": "hi", "stream": True})
+    assert resp.status == 200
+    events = _sse_events(await resp.text())
+    completed = [event for event in events if event.get("type") == "response.completed"][-1]
+    assert completed["response"]["usage"] == {"prompt_tokens": 4, "completion_tokens": 2, "total_tokens": 6}
+
+    await shim_client.close()
+    await upstream_client.close()
+
+
+async def test_streaming_anthropic_response_completed_includes_usage():
+    class FakeResponse:
+        def __init__(self):
+            self.chunks: list[bytes] = []
+
+        async def write(self, data: bytes):
+            self.chunks.append(data)
+
+    downstream = FakeResponse()
+    state = ResponsesStreamState("claude-real")
+    await state.write_anthropic_delta(
+        downstream,
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn"},
+            "usage": {"input_tokens": 5, "output_tokens": 3},
+        },
+    )
+    await state.finish(downstream)
+
+    events = _sse_events(b"".join(downstream.chunks).decode())
+    completed = [event for event in events if event.get("type") == "response.completed"][-1]
+    assert completed["response"]["usage"] == {"input_tokens": 5, "output_tokens": 3}
 
 
 async def test_responses_compact_routes_to_openai_chat_and_returns_compacted_window(tmp_path):

@@ -607,6 +607,7 @@ class ResponsesStreamState:
         self.message_text = ""
         self.message_opened = False
         self.message_closed = False
+        self.usage: dict[str, Any] | None = None
         # Tool call state, keyed by upstream "index" (chat-completions) or
         # anthropic content_block_index. Each entry tracks its assigned
         # output_index, accumulated arguments, name, etc.
@@ -637,6 +638,9 @@ class ResponsesStreamState:
     # Chat-completions (OpenAI-style) deltas
     # ------------------------------------------------------------------
     async def write_chat_delta(self, response: web.StreamResponse, chunk: dict[str, Any]) -> None:
+        usage = chunk.get("usage")
+        if isinstance(usage, dict):
+            self.usage = usage
         choice = (chunk.get("choices") or [{}])[0]
         delta = choice.get("delta") or {}
         reasoning = delta.get("reasoning_content") or delta.get("reasoning")
@@ -762,6 +766,10 @@ class ResponsesStreamState:
                 if state is None:
                     state = await self._open_reasoning(response, key=("anthropic_thinking", idx))
                 state["signature"] += delta.get("signature") or ""
+        elif event_type == "message_delta":
+            usage = event.get("usage")
+            if isinstance(usage, dict):
+                self.usage = usage
         elif event_type == "content_block_stop":
             idx = int(event.get("index", 0))
             tool_state = self.tool_calls.get(("anthropic", idx))
@@ -1040,7 +1048,7 @@ class ResponsesStreamState:
                 collected.append((state["output_index"], self._tool_item(state, "completed")))
             collected.sort(key=lambda pair: pair[0])
             output = [item for _, item in collected]
-        return {
+        payload = {
             "id": self.response_id,
             "object": "response",
             "created_at": int(time.time()),
@@ -1048,6 +1056,9 @@ class ResponsesStreamState:
             "model": self.model,
             "output": output,
         }
+        if self.usage is not None:
+            payload["usage"] = self.usage
+        return payload
 
 
 _THINKING_MAGIC = "anthropic-thinking-v1:"

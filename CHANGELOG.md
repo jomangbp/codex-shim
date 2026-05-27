@@ -17,6 +17,9 @@ and this project does not yet follow semantic versioning (pre-1.0).
   `web_search`, `apply_patch`, and `local_shell` now translate into ordinary
   function tools for chat-completions / Anthropic providers instead of being
   dropped. Codex MCP function tools continue to pass through unchanged.
+- Streaming `response.completed` events now include upstream `usage` when chat
+  or Anthropic streams provide it, so Codex can track token counts and trigger
+  auto-compaction.
 - GitHub Actions CI (`.github/workflows/ci.yml`) running pytest and
   `compileall` on Python 3.11 and 3.12.
 - `[project.optional-dependencies] dev` in `pyproject.toml` so

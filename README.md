@@ -967,6 +967,10 @@ server is reachable.
 - Request logs are summary-level by default and avoid full prompt/API-key dumps.
 - ChatGPT passthrough reads `~/.codex/auth.json` at request time and forwards
   the access token only to ChatGPT's Codex endpoint.
+- Non-streaming upstream calls use a finite wall-clock timeout (default 300s) so
+  a stalled or unresponsive provider can't hang a worker indefinitely; streaming
+  (SSE) calls keep an unbounded read deadline but a bounded connect phase.
+  Override the non-streaming cap with `CODEX_SHIM_UPSTREAM_TIMEOUT` (seconds).
 - If you put a prompt-catching proxy in front of the shim, that proxy controls
   what it logs. Redact or hash large/private prompt bodies there.
 

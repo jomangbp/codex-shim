@@ -231,6 +231,82 @@ async def test_responses_routes_to_openai_chat(tmp_path):
     await upstream_client.close()
 
 
+def test_upstream_timeout_selects_finite_for_non_streaming(tmp_path):
+    """#40: non-streaming calls get a finite total; streaming keeps unbounded read."""
+    shim = ShimServer(tmp_path / "settings.json")
+    sync = shim._upstream_timeout({"stream": False})
+    stream = shim._upstream_timeout({"stream": True})
+    no_stream_key = shim._upstream_timeout({})
+
+    # Non-streaming: finite total wall-clock cap.
+    assert sync.total is not None and sync.total > 0
+    assert no_stream_key.total is not None and no_stream_key.total > 0
+    # Streaming: unbounded read (total=None, sock_read=None) but bounded connect.
+    assert stream.total is None
+    assert stream.sock_read is None
+    assert stream.sock_connect == server_module.UPSTREAM_CONNECT_TIMEOUT
+
+
+def test_sync_upstream_timeout_env_override(monkeypatch):
+    monkeypatch.setenv("CODEX_SHIM_UPSTREAM_TIMEOUT", "42")
+    assert server_module._sync_upstream_timeout_seconds() == 42.0
+    monkeypatch.setenv("CODEX_SHIM_UPSTREAM_TIMEOUT", "not-a-number")
+    assert server_module._sync_upstream_timeout_seconds() == server_module.DEFAULT_UPSTREAM_SYNC_TIMEOUT
+    monkeypatch.setenv("CODEX_SHIM_UPSTREAM_TIMEOUT", "-5")
+    assert server_module._sync_upstream_timeout_seconds() == server_module.DEFAULT_UPSTREAM_SYNC_TIMEOUT
+
+
+async def test_slow_non_streaming_upstream_times_out(monkeypatch, tmp_path):
+    """A stalled non-streaming upstream must error out within the deadline rather
+    than hang the handler forever."""
+    import asyncio
+
+    async def chat(request):
+        await asyncio.sleep(5)  # longer than the (overridden) sync timeout
+        return web.json_response({"choices": [{"message": {"content": "late"}}]})
+
+    upstream = web.Application()
+    upstream.router.add_post("/v1/chat/completions", chat)
+    upstream_client = TestClient(TestServer(upstream))
+    await upstream_client.start_server()
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "customModels": [
+                    {
+                        "model": "slow-openai",
+                        "displayName": "Slow OpenAI",
+                        "provider": "openai",
+                        "baseUrl": str(upstream_client.make_url("/v1")),
+                        "apiKey": "secret",
+                    }
+                ]
+            }
+        )
+    )
+    shim = ShimServer(settings)
+    # Force a short finite read deadline for the test.
+    shim.sync_timeout = server_module.ClientTimeout(total=0.3, sock_connect=5, sock_read=0.3)
+
+    from aiohttp.test_utils import make_mocked_request
+
+    route = shim.settings.by_slug_or_model("slow-openai")
+    body = {"model": "slow-openai", "stream": False, "messages": [{"role": "user", "content": "hi"}]}
+    request = make_mocked_request("POST", "/v1/chat/completions")
+
+    started = asyncio.get_event_loop().time()
+    with pytest.raises((asyncio.TimeoutError, Exception)) as exc_info:
+        await shim._post_openai_chat(request, route, body, as_responses=False)
+    elapsed = asyncio.get_event_loop().time() - started
+    # Should fail fast (well under the upstream's 5s sleep), proving the deadline applies.
+    assert elapsed < 3
+    assert isinstance(exc_info.value, asyncio.TimeoutError) or "timeout" in str(exc_info.value).lower()
+
+    await upstream_client.close()
+
+
 async def test_maybe_intercept_web_search_runs_search_in_running_loop(monkeypatch):
     """Regression for the run_until_complete deadlock: the interceptor must
     execute the search (not silently return the 'unavailable' fallback) when

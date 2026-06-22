@@ -62,6 +62,33 @@ DEBUG_DIR = Path(__file__).resolve().parents[1] / ".codex-shim"
 CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 PICKER_TOKEN_HEADER = "X-Codex-Shim-Picker-Token"
 
+# Connect timeout (TCP + TLS) applied to every upstream call.
+UPSTREAM_CONNECT_TIMEOUT = 30.0
+# Hard wall-clock cap for non-streaming upstream calls. Streaming (SSE) calls
+# legitimately read for an unbounded time, but a non-streaming call that never
+# returns would otherwise hang an aiohttp worker forever (total=None,
+# sock_read=None == "no timeout"). Override via CODEX_SHIM_UPSTREAM_TIMEOUT.
+DEFAULT_UPSTREAM_SYNC_TIMEOUT = 300.0
+
+
+def _sync_upstream_timeout_seconds() -> float:
+    raw = _os_environ_get("CODEX_SHIM_UPSTREAM_TIMEOUT")
+    if raw:
+        try:
+            value = float(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return DEFAULT_UPSTREAM_SYNC_TIMEOUT
+
+
+def _os_environ_get(name: str) -> str:
+    import os
+
+    return os.environ.get(name, "").strip()
+
+
 # Defense-in-depth headers for the picker page. The page is self-contained with
 # inline <style> and <script>, so the CSP allows inline styles/scripts but blocks
 # remote loads, embedding (frame-ancestors/X-Frame-Options), and MIME sniffing,
@@ -87,11 +114,26 @@ class ShimServer:
     def __init__(self, settings_path: Path = DEFAULT_SETTINGS, host: str = DEFAULT_HOST):
         self.settings = ModelSettings(settings_path)
         self.host = host
-        self.timeout = ClientTimeout(total=None, sock_connect=120, sock_read=None)
+        # Streaming (SSE) calls read for an unbounded time, so sock_read stays
+        # None; only the connect phase is bounded. Non-streaming calls get a
+        # finite total so a stalled upstream can't hang a worker indefinitely.
+        self.timeout = ClientTimeout(
+            total=None, sock_connect=UPSTREAM_CONNECT_TIMEOUT, sock_read=None
+        )
+        self.sync_timeout = ClientTimeout(
+            total=_sync_upstream_timeout_seconds(),
+            sock_connect=UPSTREAM_CONNECT_TIMEOUT,
+            sock_read=_sync_upstream_timeout_seconds(),
+        )
         self.picker_token = secrets.token_urlsafe(32)
         # Per-instance router cache so separate servers don't share routing
         # state, and so a model switch can invalidate stale decisions.
         self.router_cache = router_module.RouterCache()
+
+    def _upstream_timeout(self, body: dict[str, Any]) -> ClientTimeout:
+        """Pick the upstream timeout for a request: unbounded read for streaming
+        responses, a finite wall-clock cap for non-streaming ones."""
+        return self.timeout if body.get("stream") else self.sync_timeout
 
     def app(self) -> web.Application:
         allowed_hosts = build_allowed_hosts(self.host)
@@ -527,7 +569,7 @@ class ShimServer:
             "session_id": request.headers.get("session_id", ""),
         }
         url = "https://chatgpt.com/backend-api/codex/responses"
-        async with ClientSession(timeout=self.timeout) as session:
+        async with ClientSession(timeout=self._upstream_timeout(forwarded)) as session:
             upstream = await session.post(url, json=forwarded, headers=headers)
             if upstream.status >= 400:
                 return await _error_response(upstream)
@@ -593,7 +635,9 @@ class ShimServer:
             "session_id": request.headers.get("session_id", ""),
         }
         url = "https://chatgpt.com/backend-api/codex/responses/compact"
-        async with ClientSession(timeout=self.timeout) as session:
+        # Compaction is always non-streaming (stream is popped above), so use the
+        # finite sync timeout rather than the unbounded streaming one.
+        async with ClientSession(timeout=self.sync_timeout) as session:
             upstream = await session.post(url, json=forwarded, headers=headers)
             if upstream.status >= 400:
                 return await _error_response(upstream)
@@ -786,7 +830,7 @@ class ShimServer:
         url = _join_url(route.base_url, "/chat/completions")
         headers = _openai_headers(route)
         _dump_debug_request(route.slug, url, body)
-        async with ClientSession(timeout=self.timeout) as session:
+        async with ClientSession(timeout=self._upstream_timeout(body)) as session:
             upstream = await session.post(url, json=body, headers=headers)
             if upstream.status >= 400:
                 return await _error_response(upstream, slug=route.slug)
@@ -806,7 +850,7 @@ class ShimServer:
         url = _join_url(route.base_url, "/chat/completions")
         headers = _openai_headers(route)
         _dump_debug_request(route.slug, url, body)
-        async with ClientSession(timeout=self.timeout) as session:
+        async with ClientSession(timeout=self._upstream_timeout(body)) as session:
             upstream = await session.post(url, json=body, headers=headers)
             if upstream.status >= 400:
                 return await _anthropic_error_response(upstream)
@@ -820,7 +864,7 @@ class ShimServer:
     ) -> web.StreamResponse:
         url = _join_url(route.base_url, "/messages")
         headers = _anthropic_headers(route)
-        async with ClientSession(timeout=self.timeout) as session:
+        async with ClientSession(timeout=self._upstream_timeout(body)) as session:
             upstream = await session.post(url, json=body, headers=headers)
             if upstream.status >= 400:
                 return await _error_response(upstream)
@@ -839,7 +883,7 @@ class ShimServer:
     ) -> web.StreamResponse:
         url = _join_url(route.base_url, "/messages")
         headers = _anthropic_headers(route)
-        async with ClientSession(timeout=self.timeout) as session:
+        async with ClientSession(timeout=self._upstream_timeout(body)) as session:
             upstream = await session.post(url, json=body, headers=headers)
             if upstream.status >= 400:
                 return await _error_response(upstream, slug=route.slug)

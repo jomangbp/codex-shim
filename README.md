@@ -538,6 +538,15 @@ codex-shim patch-app
 codex-shim restore-app
 ```
 
+`patch-app` rewrites the Codex Desktop `app.asar` using a **pinned** ASAR packer
+(`@electron/asar@4.2.0`) rather than an unpinned `npx --yes asar`, so a registry
+compromise of the latest `asar` release cannot inject code into the bundle. To
+use a mirror or a newer audited release, set `CODEX_SHIM_ASAR_PACKAGE`, e.g.:
+
+```bash
+CODEX_SHIM_ASAR_PACKAGE="@electron/asar@4.2.0" codex-shim patch-app
+```
+
 If Codex still crashes after `patch-app`, restore with `codex-shim restore-app`
 and re-check the manual patch needles against the installed Desktop build.
 

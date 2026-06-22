@@ -612,6 +612,37 @@ def test_patch_app_fails_off_macos(monkeypatch, capsys):
     assert "macOS-only" in capsys.readouterr().err
 
 
+def test_asar_command_pins_package_version(monkeypatch):
+    monkeypatch.delenv(cli.ASAR_PACKAGE_ENV, raising=False)
+    cmd = cli._asar_command("extract", "/app.asar", "/work")
+
+    # Must pin via --package <spec> rather than the unpinned `npx --yes asar ...`.
+    assert cmd[0] == "npx"
+    assert "--package" in cmd
+    idx = cmd.index("--package")
+    assert cmd[idx + 1] == cli.DEFAULT_ASAR_PACKAGE
+    # The pinned spec is an exact name@version, not a floating tag like `latest`.
+    version = cli.DEFAULT_ASAR_PACKAGE.rsplit("@", 1)[1]
+    assert version[0].isdigit()
+    # The asar subcommand + args follow the pinned package selector.
+    assert cmd[idx + 2 :] == ["asar", "extract", "/app.asar", "/work"]
+
+
+def test_asar_command_respects_env_override(monkeypatch):
+    monkeypatch.setenv(cli.ASAR_PACKAGE_ENV, "@electron/asar@9.9.9")
+    cmd = cli._asar_command("pack", "/work", "/app.asar")
+
+    assert "@electron/asar@9.9.9" in cmd
+    assert cli.DEFAULT_ASAR_PACKAGE not in cmd
+    idx = cmd.index("--package")
+    assert cmd[idx + 1] == "@electron/asar@9.9.9"
+
+
+def test_asar_package_spec_blank_env_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv(cli.ASAR_PACKAGE_ENV, "   ")
+    assert cli._asar_package_spec() == cli.DEFAULT_ASAR_PACKAGE
+
+
 def test_restore_app_fails_off_macos(monkeypatch, capsys):
     monkeypatch.setattr(cli.sys, "platform", "linux")
 

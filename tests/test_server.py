@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sys
 
 import pytest
 from aiohttp import web
@@ -1322,6 +1323,93 @@ async def test_picker_page_sets_security_headers(tmp_path, auth_missing):
         assert "default-src 'none'" in csp
     finally:
         await shim_client.close()
+
+
+def _patch_restart_runtime(monkeypatch):
+    import subprocess as _subprocess
+    import time as _time
+
+    run_calls = []
+    popen_calls = []
+
+    def fake_run(*args, **kwargs):
+        run_calls.append((args, kwargs))
+        return None
+
+    def fake_popen(*args, **kwargs):
+        popen_calls.append((args, kwargs))
+        return None
+
+    monkeypatch.setattr(_subprocess, "run", fake_run)
+    monkeypatch.setattr(_subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(_time, "sleep", lambda *_a, **_k: None)
+    return run_calls, popen_calls
+
+
+def test_restart_codex_windows_skips_relaunch_without_shell_fallback(monkeypatch, capsys):
+    """#41: when LOCALAPPDATA is unset / Codex.exe missing, the restart must NOT
+    fall back to Popen(['Codex.exe'], shell=True) (PATH-hijack vector)."""
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    run_calls, popen_calls = _patch_restart_runtime(monkeypatch)
+
+    server_module._restart_codex_windows()
+
+    # taskkill still runs to quit Codex...
+    assert any("taskkill" in str(c[0]) for c in run_calls)
+    # ...but no relaunch subprocess is spawned (no PATH search, no shell=True).
+    assert popen_calls == []
+    assert "skipping relaunch" in capsys.readouterr().err
+
+
+def test_restart_codex_windows_relaunches_with_full_path_no_shell(monkeypatch, tmp_path):
+    """When the real Codex.exe path resolves, relaunch uses the absolute path in
+    list form with shell defaulting to False."""
+    codex_dir = tmp_path / "Programs" / "Codex"
+    codex_dir.mkdir(parents=True)
+    codex_exe = codex_dir / "Codex.exe"
+    codex_exe.write_text("")
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+    run_calls, popen_calls = _patch_restart_runtime(monkeypatch)
+
+    server_module._restart_codex_windows()
+
+    assert len(popen_calls) == 1
+    args, kwargs = popen_calls[0]
+    assert args[0] == [str(codex_exe)]
+    assert kwargs.get("shell") in (None, False)
+
+
+def test_restart_codex_app_dispatches_per_platform(monkeypatch):
+    """_restart_codex_app runs the platform helper without spawning a daemon
+    thread shell fallback."""
+    import os as _os
+
+    calls = []
+    monkeypatch.setattr(server_module, "_restart_codex_windows", lambda: calls.append("win"))
+    monkeypatch.setattr(server_module, "_restart_codex_macos", lambda: calls.append("mac"))
+
+    class _SyncThread:
+        def __init__(self, target=None, daemon=None, **kwargs):
+            self._target = target
+
+        def start(self):
+            if self._target is not None:
+                self._target()
+
+    import threading as _threading
+
+    monkeypatch.setattr(_threading, "Thread", _SyncThread)
+
+    if _os.name == "nt":
+        server_module._restart_codex_app()
+        assert calls == ["win"]
+    elif sys.platform == "darwin":
+        server_module._restart_codex_app()
+        assert calls == ["mac"]
+    else:
+        # Linux: no Codex Desktop build, restart is a no-op.
+        server_module._restart_codex_app()
+        assert calls == []
 
 
 async def test_api_models_lists_configured_models_with_active_flag(

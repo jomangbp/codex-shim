@@ -2332,6 +2332,57 @@ def _set_active_model(slug: str, display_name: str | None = None) -> None:
     print(f"[switch] set active model to {slug} ({display_name})", flush=True)
 
 
+def _restart_codex_windows() -> None:
+    """Quit and relaunch Codex Desktop on Windows.
+
+    Relaunch only happens via the absolute ``Codex.exe`` path resolved from
+    ``LOCALAPPDATA``. There is deliberately no ``Popen(["Codex.exe"], shell=True)``
+    fallback: a bare executable name with ``shell=True`` triggers a ``PATH``
+    search that an attacker can hijack with a malicious ``Codex.exe`` placed
+    earlier on ``PATH``. If the real path cannot be resolved, log and skip the
+    relaunch rather than run an unresolved binary.
+    """
+    import os as _os
+    import subprocess as _subprocess
+    import time as _time
+
+    _subprocess.run(
+        ["taskkill", "/IM", "Codex.exe", "/F"],
+        check=False,
+        stdout=_subprocess.DEVNULL,
+        stderr=_subprocess.DEVNULL,
+    )
+    _time.sleep(1.5)
+    local_appdata = _os.environ.get("LOCALAPPDATA", "")
+    codex_exe = Path(local_appdata) / "Programs" / "Codex" / "Codex.exe" if local_appdata else None
+    if codex_exe is not None and codex_exe.exists():
+        _subprocess.Popen([str(codex_exe)])
+    else:
+        print(
+            "[restart] LOCALAPPDATA not set or Codex.exe not found"
+            + (f" at {codex_exe}" if codex_exe is not None else "")
+            + "; skipping relaunch (Codex was still quit).",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def _restart_codex_macos() -> None:
+    """Quit and relaunch Codex Desktop on macOS."""
+    import subprocess as _subprocess
+    import time as _time
+
+    quit_script = 'tell application "Codex" to if it is running then quit'
+    _subprocess.run(
+        ["osascript", "-e", quit_script],
+        check=False,
+        stdout=_subprocess.DEVNULL,
+        stderr=_subprocess.DEVNULL,
+    )
+    _time.sleep(1.5)
+    _subprocess.Popen(["open", "-a", "Codex"])
+
+
 def _restart_codex_app() -> None:
     """Quit and relaunch Codex Desktop in a background thread (non-blocking).
 
@@ -2340,36 +2391,14 @@ def _restart_codex_app() -> None:
     the branch is a no-op there.
     """
     import os as _os
-    import subprocess as _subprocess
     import threading as _threading
-    import time as _time
 
     def _do_restart() -> None:
         try:
             if _os.name == "nt":
-                _subprocess.run(
-                    ["taskkill", "/IM", "Codex.exe", "/F"],
-                    check=False,
-                    stdout=_subprocess.DEVNULL,
-                    stderr=_subprocess.DEVNULL,
-                )
-                _time.sleep(1.5)
-                local_appdata = _os.environ.get("LOCALAPPDATA", "")
-                codex_exe = Path(local_appdata) / "Programs" / "Codex" / "Codex.exe"
-                if codex_exe.exists():
-                    _subprocess.Popen([str(codex_exe)])
-                else:
-                    _subprocess.Popen(["Codex.exe"], shell=True)
+                _restart_codex_windows()
             elif sys.platform == "darwin":
-                quit_script = 'tell application "Codex" to if it is running then quit'
-                _subprocess.run(
-                    ["osascript", "-e", quit_script],
-                    check=False,
-                    stdout=_subprocess.DEVNULL,
-                    stderr=_subprocess.DEVNULL,
-                )
-                _time.sleep(1.5)
-                _subprocess.Popen(["open", "-a", "Codex"])
+                _restart_codex_macos()
         except OSError:
             pass
 

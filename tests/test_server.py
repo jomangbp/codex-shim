@@ -307,6 +307,47 @@ async def test_slow_non_streaming_upstream_times_out(monkeypatch, tmp_path):
     await upstream_client.close()
 
 
+def test_debug_dump_disabled_by_default(monkeypatch, tmp_path):
+    """#46: the debug dump must be a no-op unless CODEX_SHIM_DEBUG_DUMP is set."""
+    monkeypatch.delenv("CODEX_SHIM_DEBUG_DUMP", raising=False)
+    debug_dir = tmp_path / ".codex-shim"
+    monkeypatch.setattr(server_module, "DEBUG_DIR", debug_dir)
+
+    server_module._dump_debug_request("slug", "http://x/v1", {"messages": [{"role": "user", "content": "secret"}]})
+
+    assert not (debug_dir / "last_request.json").exists()
+
+
+def test_debug_dump_enabled_writes_private_file(monkeypatch, tmp_path):
+    """When enabled, the dump dir is 0700 and the file is 0600 (not world-readable)."""
+    import os
+    import stat
+
+    monkeypatch.setenv("CODEX_SHIM_DEBUG_DUMP", "1")
+    debug_dir = tmp_path / ".codex-shim"
+    monkeypatch.setattr(server_module, "DEBUG_DIR", debug_dir)
+
+    server_module._dump_debug_request("slug", "http://x/v1", {"messages": [{"role": "user", "content": "hi"}]})
+
+    dump = debug_dir / "last_request.json"
+    assert dump.exists()
+    data = json.loads(dump.read_text())
+    assert data["slug"] == "slug"
+
+    file_mode = stat.S_IMODE(os.stat(dump).st_mode)
+    assert file_mode & 0o077 == 0, oct(file_mode)  # no group/other access
+    dir_mode = stat.S_IMODE(os.stat(debug_dir).st_mode)
+    assert dir_mode & 0o077 == 0, oct(dir_mode)
+
+
+def test_debug_dump_enabled_via_truthy_values(monkeypatch, tmp_path):
+    debug_dir = tmp_path / ".codex-shim"
+    monkeypatch.setattr(server_module, "DEBUG_DIR", debug_dir)
+    for value, expected in (("0", False), ("", False), ("on", True), ("TRUE", True), ("yes", True)):
+        monkeypatch.setenv("CODEX_SHIM_DEBUG_DUMP", value)
+        assert server_module._debug_dump_enabled() is expected
+
+
 async def test_maybe_intercept_web_search_runs_search_in_running_loop(monkeypatch):
     """Regression for the run_until_complete deadlock: the interceptor must
     execute the search (not silently return the 'unavailable' fallback) when

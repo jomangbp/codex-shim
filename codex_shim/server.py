@@ -2307,16 +2307,34 @@ def _normalize_roles(messages: list[dict]) -> list[dict]:
     return result
 
 
+def _debug_dump_enabled() -> bool:
+    import os
+
+    return os.environ.get("CODEX_SHIM_DEBUG_DUMP", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _dump_debug_request(slug: str, url: str, body: dict[str, Any]) -> None:
     """Best-effort dump of the last forwarded request body for debugging.
 
-    Writes ``.codex-shim/last_request.json`` next to the rest of the runtime
-    state (catalog, pid, log). Failures are silently swallowed — this is a
-    debug aid, not a code path the request should depend on.
+    Disabled by default: the dumped body contains the full conversation (code
+    context, tool output, history), so writing it unconditionally to a
+    world-readable file in the project directory is an information-disclosure
+    risk. Set ``CODEX_SHIM_DEBUG_DUMP=1`` to enable. When enabled, the directory
+    is created mode ``0o700`` and the file written mode ``0o600`` so other local
+    users cannot read it. Failures are silently swallowed — this is a debug aid,
+    not a code path the request should depend on.
     """
+    if not _debug_dump_enabled():
+        return
+    import os
+
     try:
         dump_path = DEBUG_DIR / "last_request.json"
         dump_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(dump_path.parent, 0o700)
+        except OSError:
+            pass
         payload = {"slug": slug, "url": url, "body": body}
         full = json.dumps(payload, indent=2, default=str)
         if len(full) > 2_000_000:
@@ -2330,9 +2348,18 @@ def _dump_debug_request(slug: str, url: str, body: dict[str, Any]) -> None:
                 "tool_count": len(body.get("tools") or []),
                 "last_3_messages": messages[-3:],
             }
-            dump_path.write_text(json.dumps(summary, indent=2, default=str))
-        else:
-            dump_path.write_text(full)
+            full = json.dumps(summary, indent=2, default=str)
+        # Open with O_CREAT|O_WRONLY|O_TRUNC at mode 0o600 so the file is private
+        # from creation (write_text would use the umask, often 0o644).
+        fd = os.open(dump_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(full)
+        finally:
+            try:
+                os.chmod(dump_path, 0o600)
+            except OSError:
+                pass
     except OSError as exc:
         print(f"[debug] dump failed: {exc}", flush=True)
 

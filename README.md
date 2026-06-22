@@ -965,6 +965,10 @@ server is reachable.
 - API keys stay in your settings file; the generated catalog does not contain
   them.
 - Request logs are summary-level by default and avoid full prompt/API-key dumps.
+- The full-request debug dump (`.codex-shim/last_request.json`) is **disabled by
+  default** because it contains the whole conversation body. Enable it only for
+  debugging with `CODEX_SHIM_DEBUG_DUMP=1`; when enabled, the file is written
+  private to your user (`0600`) inside a `0700` directory.
 - ChatGPT passthrough reads `~/.codex/auth.json` at request time and forwards
   the access token only to ChatGPT's Codex endpoint.
 - Non-streaming upstream calls use a finite wall-clock timeout (default 300s) so

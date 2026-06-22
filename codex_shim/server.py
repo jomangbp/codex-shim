@@ -62,6 +62,26 @@ DEBUG_DIR = Path(__file__).resolve().parents[1] / ".codex-shim"
 CODEX_CONFIG_PATH = Path.home() / ".codex" / "config.toml"
 PICKER_TOKEN_HEADER = "X-Codex-Shim-Picker-Token"
 
+# Defense-in-depth headers for the picker page. The page is self-contained with
+# inline <style> and <script>, so the CSP allows inline styles/scripts but blocks
+# remote loads, embedding (frame-ancestors/X-Frame-Options), and MIME sniffing,
+# making the embedded picker token harder to exfiltrate passively.
+_PICKER_SECURITY_HEADERS = {
+    "Content-Security-Policy": (
+        "default-src 'none'; "
+        "script-src 'unsafe-inline'; "
+        "style-src 'unsafe-inline'; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'none'; "
+        "form-action 'none'"
+    ),
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Cache-Control": "no-store",
+}
+
 
 class ShimServer:
     def __init__(self, settings_path: Path = DEFAULT_SETTINGS, host: str = DEFAULT_HOST):
@@ -91,7 +111,11 @@ class ShimServer:
         return app
 
     async def picker_page(self, _request: web.Request) -> web.Response:
-        return web.Response(text=_picker_html(self.picker_token), content_type="text/html")
+        return web.Response(
+            text=_picker_html(self.picker_token),
+            content_type="text/html",
+            headers=_PICKER_SECURITY_HEADERS,
+        )
 
     async def api_models(self, _request: web.Request) -> web.Response:
         current = _current_managed_model()

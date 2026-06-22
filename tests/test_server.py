@@ -1307,6 +1307,23 @@ async def test_picker_page_served_at_picker(tmp_path, auth_missing):
         await shim_client.close()
 
 
+async def test_picker_page_sets_security_headers(tmp_path, auth_missing):
+    settings = _picker_settings_file(tmp_path)
+    shim_client = TestClient(TestServer(ShimServer(settings).app()))
+    await shim_client.start_server()
+    try:
+        resp = await shim_client.get("/picker")
+        assert resp.status == 200
+        assert resp.headers["X-Frame-Options"] == "DENY"
+        assert resp.headers["X-Content-Type-Options"] == "nosniff"
+        assert resp.headers["Referrer-Policy"] == "no-referrer"
+        csp = resp.headers["Content-Security-Policy"]
+        assert "frame-ancestors 'none'" in csp
+        assert "default-src 'none'" in csp
+    finally:
+        await shim_client.close()
+
+
 async def test_api_models_lists_configured_models_with_active_flag(
     monkeypatch, tmp_path, auth_missing
 ):

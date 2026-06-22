@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
 import pytest
 from aiohttp import web
@@ -1353,7 +1354,7 @@ def _picker_settings_file(tmp_path):
     return settings
 
 
-def _stub_codex_config(monkeypatch, tmp_path, *, model: str = "kimi-k26") -> "Path":
+def _stub_codex_config(monkeypatch, tmp_path, *, model: str = "kimi-k26") -> Path:
     config = tmp_path / "config.toml"
     config.write_text(
         f'model = "{model}"\n'

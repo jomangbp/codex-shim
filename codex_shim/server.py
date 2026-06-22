@@ -159,7 +159,9 @@ class ShimServer:
             headers=_PICKER_SECURITY_HEADERS,
         )
 
-    async def api_models(self, _request: web.Request) -> web.Response:
+    async def api_models(self, request: web.Request) -> web.Response:
+        if not self._valid_picker_token(request):
+            return web.json_response({"error": "forbidden"}, status=403)
         current = _current_managed_model()
         data: list[dict[str, Any]] = []
         router_config = self._active_router()
@@ -2510,7 +2512,9 @@ def _picker_html(picker_token: str) -> str:
 <script>
 const PICKER_TOKEN = @@TOKEN_JSON@@;
 async function loadModels() {
-  const res = await fetch('/api/models');
+  const res = await fetch('/api/models', {
+    headers: {'@@PICKER_HEADER@@': PICKER_TOKEN}
+  });
   const models = await res.json();
   const container = document.getElementById('models');
   container.innerHTML = '';
@@ -2568,7 +2572,7 @@ loadModels();
 </body>
 </html>'''
     return (
-        html.replace("@@TOKEN_JSON@@", token_json, 1).replace("@@PICKER_HEADER@@", PICKER_TOKEN_HEADER, 1)
+        html.replace("@@TOKEN_JSON@@", token_json, 1).replace("@@PICKER_HEADER@@", PICKER_TOKEN_HEADER)
     )
 
 

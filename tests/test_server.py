@@ -1493,10 +1493,11 @@ async def test_api_models_lists_configured_models_with_active_flag(
 ):
     settings = _picker_settings_file(tmp_path)
     _stub_codex_config(monkeypatch, tmp_path, model="deepseek-v4-pro")
-    shim_client = TestClient(TestServer(ShimServer(settings).app()))
+    shim = ShimServer(settings)
+    shim_client = TestClient(TestServer(shim.app()))
     await shim_client.start_server()
     try:
-        resp = await shim_client.get("/api/models")
+        resp = await shim_client.get("/api/models", headers=_picker_headers(shim))
         assert resp.status == 200
         data = await resp.json()
         slugs = [m["slug"] for m in data]
@@ -1512,16 +1513,44 @@ async def test_api_models_includes_chatgpt_when_auth_present(
 ):
     settings = _picker_settings_file(tmp_path)
     _stub_codex_config(monkeypatch, tmp_path, model="gpt-5.5")
-    shim_client = TestClient(TestServer(ShimServer(settings).app()))
+    shim = ShimServer(settings)
+    shim_client = TestClient(TestServer(shim.app()))
     await shim_client.start_server()
     try:
-        resp = await shim_client.get("/api/models")
+        resp = await shim_client.get("/api/models", headers=_picker_headers(shim))
         data = await resp.json()
         slugs = [m["slug"] for m in data]
         assert slugs[0] == "gpt-5.5"
         assert data[0]["active"] is True
     finally:
         await shim_client.close()
+
+
+async def test_api_models_rejects_missing_picker_token(monkeypatch, tmp_path, auth_missing):
+    settings = _picker_settings_file(tmp_path)
+    _stub_codex_config(monkeypatch, tmp_path, model="deepseek-v4-pro")
+    shim = ShimServer(settings)
+    shim_client = TestClient(TestServer(shim.app()))
+    await shim_client.start_server()
+    try:
+        # No token header -> forbidden.
+        resp = await shim_client.get("/api/models")
+        assert resp.status == 403
+        assert await resp.json() == {"error": "forbidden"}
+        # Wrong token -> forbidden.
+        resp = await shim_client.get("/api/models", headers={PICKER_TOKEN_HEADER: "wrong"})
+        assert resp.status == 403
+    finally:
+        await shim_client.close()
+
+
+async def test_picker_html_loads_models_with_token_header():
+    html = _picker_html("test-token")
+    # The picker page must send the token when fetching /api/models, now that the
+    # endpoint is authenticated.
+    assert "fetch('/api/models'" in html
+    assert html.count(PICKER_TOKEN_HEADER) >= 2  # /api/models fetch + /api/switch fetch
+    assert "@@PICKER_HEADER@@" not in html
 
 
 async def test_switch_model_rewrites_config_without_restart(

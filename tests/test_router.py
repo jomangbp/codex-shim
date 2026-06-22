@@ -412,13 +412,16 @@ async def test_auto_router_falls_back_when_classifier_missing(tmp_path, auth_mis
 # ---------------------------------------------------------------------------
 async def test_discovery_includes_auto_model(tmp_path, auth_missing):
     settings = _settings_with_router(tmp_path, "http://upstream.invalid/v1")
-    shim = TestClient(TestServer(ShimServer(settings).app()))
+    server = ShimServer(settings)
+    shim = TestClient(TestServer(server.app()))
     await shim.start_server()
 
     models = await (await shim.get("/v1/models")).json()
     assert "codex-auto" in [m["id"] for m in models["data"]]
 
-    api = await (await shim.get("/api/models")).json()
+    api = await (
+        await shim.get("/api/models", headers={"X-Codex-Shim-Picker-Token": server.picker_token})
+    ).json()
     auto = [m for m in api if m["slug"] == "codex-auto"]
     assert auto and auto[0]["provider"] == "auto"
 

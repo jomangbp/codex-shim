@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import re
 import secrets
@@ -763,7 +764,7 @@ class ShimServer:
         if as_responses:
             tool_types = _build_tool_types(body)
             payload = chat_completion_to_response(payload, route.slug, tool_types)
-            intercepted = _maybe_intercept_web_search(payload)
+            intercepted = await _maybe_intercept_web_search(payload)
             return web.json_response(intercepted or payload)
         return web.json_response(payload)
 
@@ -797,7 +798,7 @@ class ShimServer:
         if as_responses:
             tool_types = _build_tool_types(body)
             payload = anthropic_to_response(payload, route.slug, tool_types)
-            intercepted = _maybe_intercept_web_search(payload)
+            intercepted = await _maybe_intercept_web_search(payload)
             return web.json_response(intercepted or payload)
         return web.json_response(anthropic_to_chat_response(payload, route.slug))
 
@@ -1787,9 +1788,15 @@ async def _perform_web_search(query: str) -> str:
             "Chrome/120.0.0.0 Safari/537.36"
         },
     )
-    try:
+
+    def _fetch() -> str:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            html = resp.read().decode("utf-8", errors="replace")
+            return resp.read().decode("utf-8", errors="replace")
+
+    try:
+        # urlopen is blocking; run it off the event loop so a slow search does
+        # not stall the request handler that awaits this coroutine.
+        html = await asyncio.to_thread(_fetch)
     except Exception as exc:
         return f"Web search failed: {exc}"
 
@@ -1867,11 +1874,16 @@ async def _perform_web_search(query: str) -> str:
         return "No web search results found."
     return "\n\n".join(results)
 
-def _maybe_intercept_web_search(payload: dict[str, Any]) -> dict[str, Any] | None:
+async def _maybe_intercept_web_search(payload: dict[str, Any]) -> dict[str, Any] | None:
     """If the response payload contains a web_search_call, execute it server-side
     and return a new payload with the results embedded as a function_call_output.
 
     Returns None if no web_search_call is present (pass through unchanged).
+
+    This coroutine is awaited from the (already-running) async request handlers,
+    so it awaits ``_perform_web_search`` directly. Driving the loop with
+    ``loop.run_until_complete`` from inside a running loop raises
+    ``RuntimeError`` and would make web search silently fail.
     """
     output = payload.get("output") or []
     if not isinstance(output, list):
@@ -1891,13 +1903,7 @@ def _maybe_intercept_web_search(payload: dict[str, Any]) -> dict[str, Any] | Non
         except json.JSONDecodeError:
             args = {}
         query = args.get("query") or ""
-        # Run the search synchronously (non-streaming path only)
-        import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-            result_text = loop.run_until_complete(_perform_web_search(query))
-        except RuntimeError:
-            result_text = "Web search unavailable in this context."
+        result_text = await _perform_web_search(query)
         results.append({
             "id": f"wso_{call.get('call_id', '0')}",
             "type": "function_call_output",

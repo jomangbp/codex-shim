@@ -230,6 +230,130 @@ async def test_responses_routes_to_openai_chat(tmp_path):
     await upstream_client.close()
 
 
+async def test_maybe_intercept_web_search_runs_search_in_running_loop(monkeypatch):
+    """Regression for the run_until_complete deadlock: the interceptor must
+    execute the search (not silently return the 'unavailable' fallback) when
+    awaited from inside a running event loop."""
+    calls = []
+
+    async def fake_search(query):
+        calls.append(query)
+        return f"RESULTS FOR {query}"
+
+    monkeypatch.setattr(server_module, "_perform_web_search", fake_search)
+
+    payload = {
+        "output": [
+            {
+                "type": "web_search_call",
+                "call_id": "wsc_1",
+                "arguments": json.dumps({"query": "python asyncio"}),
+            }
+        ]
+    }
+
+    result = await server_module._maybe_intercept_web_search(payload)
+
+    assert result is not None
+    assert calls == ["python asyncio"]
+    [item] = result["output"]
+    assert item["type"] == "function_call_output"
+    assert item["call_id"] == "wsc_1"
+    assert item["output"] == "RESULTS FOR python asyncio"
+    assert "unavailable in this context" not in item["output"]
+
+
+async def test_maybe_intercept_web_search_passthrough_without_search_call(monkeypatch):
+    async def fake_search(query):  # pragma: no cover - must not be called
+        raise AssertionError("search should not run without a web_search_call")
+
+    monkeypatch.setattr(server_module, "_perform_web_search", fake_search)
+
+    payload = {"output": [{"type": "message", "content": []}]}
+    assert await server_module._maybe_intercept_web_search(payload) is None
+
+
+async def test_post_openai_chat_intercepts_web_search_as_responses(monkeypatch, tmp_path):
+    """Acceptance test for #39: a non-streaming request through _post_openai_chat
+    whose upstream returns a web_search tool call must come back with a
+    function_call_output carrying real results, not the 'unavailable' fallback."""
+    from aiohttp.test_utils import make_mocked_request
+
+    async def fake_search(query):
+        return f"top result for {query}"
+
+    monkeypatch.setattr(server_module, "_perform_web_search", fake_search)
+
+    async def chat(request):
+        return web.json_response(
+            {
+                "id": "chatcmpl_ws",
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "call_ws",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "web_search",
+                                        "arguments": json.dumps({"query": "weather"}),
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+        )
+
+    upstream = web.Application()
+    upstream.router.add_post("/v1/chat/completions", chat)
+    upstream_client = TestClient(TestServer(upstream))
+    await upstream_client.start_server()
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "customModels": [
+                    {
+                        "model": "real-openai",
+                        "displayName": "Real OpenAI",
+                        "provider": "openai",
+                        "baseUrl": str(upstream_client.make_url("/v1")),
+                        "apiKey": "secret",
+                    }
+                ]
+            }
+        )
+    )
+    shim = ShimServer(settings)
+    route = shim.settings.by_slug_or_model("real-openai")
+    body = {
+        "model": "real-openai",
+        "stream": False,
+        "tools": [{"type": "web_search"}],
+        "messages": [{"role": "user", "content": "what's the weather"}],
+    }
+    request = make_mocked_request("POST", "/v1/responses")
+
+    resp = await shim._post_openai_chat(request, route, body, as_responses=True)
+
+    assert resp.status == 200
+    payload = json.loads(resp.body)
+    outputs = payload["output"]
+    search_outputs = [o for o in outputs if o.get("type") == "function_call_output"]
+    assert search_outputs, outputs
+    assert search_outputs[0]["output"] == "top result for weather"
+    assert all("unavailable in this context" not in str(o.get("output", "")) for o in outputs)
+
+    await upstream_client.close()
+
+
 async def test_missing_api_key_env_has_model_specific_error(monkeypatch, tmp_path):
     monkeypatch.delenv("OPENCODE_GO_API_KEY", raising=False)
     settings = tmp_path / "settings.json"

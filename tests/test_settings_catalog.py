@@ -131,6 +131,143 @@ def test_api_key_env_missing_without_literal_stays_empty(monkeypatch, tmp_path):
     assert model.api_key == ""
 
 
+def test_empty_api_key_non_cursor_provider_does_not_inherit_cursor_key(monkeypatch, tmp_path):
+    """A model with an empty api_key on a non-Cursor provider must not pick up
+    the ambient Cursor key (would silently forward it to an arbitrary base_url)."""
+    cursor_key = tmp_path / "cursor-api-key"
+    cursor_key.write_text("crsr_secret\n")
+    monkeypatch.setattr("codex_shim.settings.DEFAULT_CURSOR_API_KEY_FILE", cursor_key)
+    monkeypatch.setenv("CURSOR_API_KEY", "crsr_env_secret")
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "model": "evil-model",
+                        "provider": "generic-chat-completion-api",
+                        "base_url": "https://attacker.example.com/v1",
+                    }
+                ]
+            }
+        )
+    )
+
+    [model] = ModelSettings(settings).load()
+
+    assert model.api_key == ""
+
+
+def test_empty_api_key_non_cursor_provider_excluded_from_usable(monkeypatch, tmp_path):
+    from codex_shim.settings import byok_model_has_credentials, usable_byok_models
+
+    cursor_key = tmp_path / "cursor-api-key"
+    cursor_key.write_text("crsr_secret\n")
+    monkeypatch.setattr("codex_shim.settings.DEFAULT_CURSOR_API_KEY_FILE", cursor_key)
+    monkeypatch.setenv("CURSOR_API_KEY", "crsr_env_secret")
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "model": "evil-model",
+                        "provider": "generic-chat-completion-api",
+                        "base_url": "https://attacker.example.com/v1",
+                    }
+                ]
+            }
+        )
+    )
+
+    models = ModelSettings(settings).load()
+
+    assert byok_model_has_credentials(models[0]) is False
+    assert usable_byok_models(models) == []
+
+
+def test_unset_env_template_api_key_does_not_inherit_cursor_key(monkeypatch, tmp_path):
+    """``api_key: "${UNSET}"`` resolving to empty must not fall through to the
+    Cursor key for a non-Cursor provider."""
+    monkeypatch.delenv("SOME_UNSET_VAR", raising=False)
+    cursor_key = tmp_path / "cursor-api-key"
+    cursor_key.write_text("crsr_secret\n")
+    monkeypatch.setattr("codex_shim.settings.DEFAULT_CURSOR_API_KEY_FILE", cursor_key)
+    monkeypatch.setenv("CURSOR_API_KEY", "crsr_env_secret")
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "model": "evil-model",
+                        "provider": "generic-chat-completion-api",
+                        "base_url": "https://attacker.example.com/v1",
+                        "api_key": "${SOME_UNSET_VAR}",
+                    }
+                ]
+            }
+        )
+    )
+
+    [model] = ModelSettings(settings).load()
+
+    assert model.api_key == ""
+
+
+def test_empty_api_key_cursor_provider_inherits_cursor_key(monkeypatch, tmp_path):
+    """A Cursor-target model with no key still inherits the ambient Cursor key."""
+    cursor_key = tmp_path / "cursor-api-key"
+    cursor_key.write_text("crsr_secret\n")
+    monkeypatch.setattr("codex_shim.settings.DEFAULT_CURSOR_API_KEY_FILE", cursor_key)
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "model": "composer-2.5",
+                        "provider": "cursor",
+                        "base_url": "https://cursor-api.standardagents.ai/v1",
+                    }
+                ]
+            }
+        )
+    )
+
+    [model] = ModelSettings(settings).load()
+
+    assert model.api_key == "crsr_secret"
+
+
+def test_empty_api_key_cursor_base_url_inherits_cursor_key_from_env(monkeypatch, tmp_path):
+    """A model pointed at a Cursor base_url inherits the key even if the provider
+    label is generic."""
+    monkeypatch.setattr(
+        "codex_shim.settings.DEFAULT_CURSOR_API_KEY_FILE", tmp_path / "missing-cursor-api-key"
+    )
+    monkeypatch.setenv("CURSOR_API_KEY", "crsr_env_secret")
+    settings = tmp_path / "settings.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {
+                        "model": "composer-2.5",
+                        "provider": "generic-chat-completion-api",
+                        "base_url": "https://cursor-api.standardagents.ai/v1",
+                    }
+                ]
+            }
+        )
+    )
+
+    [model] = ModelSettings(settings).load()
+
+    assert model.api_key == "crsr_env_secret"
+
+
 def test_opencode_go_model_row_prefers_chat_and_prefixes_slug():
     row = opencode_go_model_row(
         "glm-5.1",

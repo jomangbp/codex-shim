@@ -69,6 +69,9 @@ class ShimServer:
         self.host = host
         self.timeout = ClientTimeout(total=None, sock_connect=120, sock_read=None)
         self.picker_token = secrets.token_urlsafe(32)
+        # Per-instance router cache so separate servers don't share routing
+        # state, and so a model switch can invalidate stale decisions.
+        self.router_cache = router_module.RouterCache()
 
     def app(self) -> web.Application:
         allowed_hosts = build_allowed_hosts(self.host)
@@ -164,6 +167,9 @@ class ShimServer:
         if slug not in valid:
             return web.json_response({"error": f"unknown model: {slug}"}, status=404)
         _set_active_model(slug, display_for.get(slug, slug))
+        # Switching the active model is a config change: drop any cached routing
+        # decisions so stale slugs aren't served after the switch.
+        self.router_cache.clear()
         restart = bool(body.get("restart_codex"))
         if restart:
             _restart_codex_app()
@@ -698,7 +704,9 @@ class ShimServer:
             ):
                 classify = self._make_classifier(classifier_model, config)
         log = (lambda message: print(message, flush=True)) if router_module.router_log_enabled() else None
-        resolved, _info = await router_module.resolve_auto(config, candidates, body, classify, log=log)
+        resolved, _info = await router_module.resolve_auto(
+            config, candidates, body, classify, log=log, cache=self.router_cache
+        )
         return resolved or router_module.fallback_slug(
             config, candidates, has_image_task=router_module.has_images(body)
         )

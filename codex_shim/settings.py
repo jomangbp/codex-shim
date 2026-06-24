@@ -179,6 +179,7 @@ class ShimModel:
     max_context_limit: int | None = None
     max_output_tokens: int | None = None
     no_image_support: bool = False
+    no_reasoning: bool = False
     extra_headers: dict[str, str] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -228,7 +229,7 @@ class ModelSettings:
             used.add(slug)
 
             extra_headers = {
-                str(k): str(v)
+                str(k): _resolve_simple_env(v)
                 for k, v in (_field(row, "extra_headers", "extraHeaders", default={}) or {}).items()
                 if v is not None
             }
@@ -237,7 +238,48 @@ class ModelSettings:
             if api_key_env:
                 api_key = os.environ.get(api_key_env, api_key).strip()
             else:
-                api_key = _resolve_api_key(api_key)
+                api_key = _resolve_api_key(api_key, provider)
+
+            # Support external OAuth / token sources for "our own models using oauth"
+            # Priority: explicit api_key_command > api_key_file > previous value
+            api_key_cmd = str(_field(row, "api_key_command", "apiKeyCommand", "token_command", "tokenCommand", default="")).strip()
+            if api_key_cmd:
+                try:
+                    import subprocess
+                    out = subprocess.check_output(api_key_cmd, shell=True, text=True, stderr=subprocess.DEVNULL, timeout=25)
+                    if out and out.strip():
+                        api_key = out.strip()
+                except Exception:
+                    pass
+
+            api_key_file = str(_field(row, "api_key_file", "apiKeyFile", default="")).strip()
+            if api_key_file:
+                try:
+                    p = Path(api_key_file).expanduser()
+                    if p.exists():
+                        content = p.read_text().strip()
+                        if content:
+                            # If it looks like JSON auth (xAI grok oauth, codex auth.json, etc), extract token
+                            if content.startswith("{"):
+                                try:
+                                    data = json.loads(content)
+                                    if isinstance(data, dict):
+                                        tok = (
+                                            data.get("access_token")
+                                            or (data.get("tokens") or {}).get("access_token")
+                                            or data.get("token")
+                                        )
+                                        if tok:
+                                            content = tok
+                                except Exception:
+                                    pass
+                            api_key = content.strip()
+                except Exception:
+                    pass
+
+            # Final ${ENV} pass for api_key (covers cases where value was a template)
+            if api_key:
+                api_key = _resolve_simple_env(api_key)
             models.append(
                 ShimModel(
                     slug=slug,
@@ -250,6 +292,7 @@ class ModelSettings:
                     max_context_limit=_int_or_none(_field(row, "max_context_limit", "maxContextLimit")),
                     max_output_tokens=_int_or_none(_field(row, "max_output_tokens", "maxOutputTokens")),
                     no_image_support=bool(_field(row, "no_image_support", "noImageSupport", default=False)),
+                    no_reasoning=bool(_field(row, "no_reasoning", "noReasoning", default=False)),
                     extra_headers=extra_headers,
                     raw=row,
                 )
@@ -296,6 +339,8 @@ def _coerce_model_row(row: Any) -> dict[str, Any] | None:
             "display_name": row,
             "provider": "generic-chat-completion-api",
             "base_url": "http://127.0.0.1:11434/v1",
+            "api_key": "ollama",
+            "no_reasoning": True,
         }
     if isinstance(row, dict):
         return _normalize_model_row(row)
@@ -314,6 +359,12 @@ def _normalize_model_row(row: dict[str, Any]) -> dict[str, Any]:
         normalized["provider"] = "generic-chat-completion-api"
         if not _field(normalized, "base_url", "baseUrl", "baseURL"):
             normalized["base_url"] = "http://127.0.0.1:11434/v1"
+        if not _field(normalized, "api_key", "apiKey", "api_key_env", "apiKeyEnv", "bearerToken"):
+            normalized["api_key"] = "ollama"
+        if "no_reasoning" not in normalized and "noReasoning" not in normalized:
+            # Cloud models proxied through Ollama (e.g. kimi-k2.7-code:cloud)
+            # support reasoning; only force no_reasoning for truly local models.
+            normalized["no_reasoning"] = not _is_cloud_model(normalized)
     return normalized
 
 
@@ -323,6 +374,18 @@ def _looks_like_ollama_row(row: dict[str, Any]) -> bool:
     return provider == "ollama" or "11434" in base_url or "ollama" in base_url
 
 
+def _is_cloud_model(row: dict[str, Any]) -> bool:
+    """Detect cloud-hosted models proxied through a local Ollama instance.
+
+    Models with ':cloud' or '-cloud' in their model name are remote cloud
+    models (e.g. kimi-k2.7-code:cloud, glm-5.2:cloud) that support reasoning,
+    even though they are accessed through Ollama's local proxy on port 11434.
+    These should NOT get no_reasoning forced the way local Ollama models do.
+    """
+    model = str(row.get("model") or "").lower()
+    return ":cloud" in model or "-cloud" in model or ":server" in model
+
+
 def _field(row: dict[str, Any], *keys: str, default: Any = None) -> Any:
     for key in keys:
         if key in row:
@@ -330,18 +393,31 @@ def _field(row: dict[str, Any], *keys: str, default: Any = None) -> Any:
     return default
 
 
-def _resolve_api_key(value: str) -> str:
+def _resolve_api_key(value: str, provider: str = "") -> str:
     raw = value.strip()
     if raw.startswith("${") and raw.endswith("}"):
         raw = os.environ.get(raw[2:-1].strip(), "")
-    if not raw and DEFAULT_CURSOR_API_KEY_FILE.exists():
-        try:
-            raw = DEFAULT_CURSOR_API_KEY_FILE.read_text().strip()
-        except OSError:
-            raw = ""
-    if not raw:
-        raw = os.environ.get("CURSOR_API_KEY", "").strip()
+    if not raw and _looks_like_cursor_provider(provider):
+        if DEFAULT_CURSOR_API_KEY_FILE.exists():
+            try:
+                raw = DEFAULT_CURSOR_API_KEY_FILE.read_text().strip()
+            except OSError:
+                raw = ""
+        if not raw:
+            raw = os.environ.get("CURSOR_API_KEY", "").strip()
     return raw
+
+
+def _resolve_simple_env(value: str) -> str:
+    """Resolve a lone ${ENV} value (used for api keys and header values)."""
+    v = str(value).strip()
+    if v.startswith("${") and v.endswith("}"):
+        return os.environ.get(v[2:-1].strip(), v)
+    return v
+
+
+def _looks_like_cursor_provider(provider: str) -> bool:
+    return str(provider).lower() in {"cursor", "cursor-passthrough", "cursor-subscription"}
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -390,4 +466,14 @@ def available_model_slugs(models: list[ShimModel]) -> set[str]:
 
 
 def byok_model_has_credentials(model: ShimModel) -> bool:
-    return bool(model.api_key.strip())
+    if model.api_key and model.api_key.strip():
+        return True
+    # Support models that provide auth exclusively via extra_headers
+    # (common for OAuth setups where the full Authorization or x-api-key is supplied
+    # by an external token fetcher or env-resolved value).
+    for k, v in (model.extra_headers or {}).items():
+        kl = str(k).lower()
+        if kl in {"authorization", "x-api-key", "api-key"} or "auth" in kl or "bearer" in kl:
+            if str(v).strip():
+                return True
+    return False

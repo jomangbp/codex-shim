@@ -14,7 +14,7 @@ from .settings import (
     load_chatgpt_passthrough_catalog_models,
     usable_byok_models,
 )
-from .cursor_passthrough import cursor_catalog_entry, cursor_passthrough_available
+from .cursor_passthrough import CURSOR_MODEL_SLUG, cursor_catalog_entries, cursor_passthrough_available
 
 
 PLAN_TIERS = ["free", "plus", "pro", "team", "business", "enterprise"]
@@ -25,6 +25,17 @@ def catalog_entry(model: ShimModel) -> dict:
     compact = max(8_000, int(context * 0.8))
     truncation = min(64_000, max(8_000, int(context * 0.32)))
     reasoning = _reasoning_effort(model)
+    if model.no_reasoning:
+        supported_reasoning_levels = [
+            {"effort": "none", "description": "No reasoning; fastest responses."},
+        ]
+    else:
+        supported_reasoning_levels = [
+            {"effort": "low", "description": "Faster, lighter reasoning"},
+            {"effort": "medium", "description": "Balanced speed and reasoning"},
+            {"effort": "high", "description": "Deeper reasoning"},
+            {"effort": "xhigh", "description": "Maximum reasoning where supported"},
+        ]
     return {
         "slug": model.slug,
         "display_name": model.display_name,
@@ -34,12 +45,7 @@ def catalog_entry(model: ShimModel) -> dict:
         "auto_compact_token_limit": compact,
         "truncation_policy": {"mode": "tokens", "limit": truncation},
         "default_reasoning_level": reasoning,
-        "supported_reasoning_levels": [
-            {"effort": "low", "description": "Faster, lighter reasoning"},
-            {"effort": "medium", "description": "Balanced speed and reasoning"},
-            {"effort": "high", "description": "Deeper reasoning"},
-            {"effort": "xhigh", "description": "Maximum reasoning where supported"},
-        ],
+        "supported_reasoning_levels": supported_reasoning_levels,
         "default_reasoning_summary": "none",
         "reasoning_summary_format": "none",
         "supports_reasoning_summaries": False,
@@ -103,10 +109,15 @@ def write_catalog(models: list[ShimModel], path: Path, router_config=None) -> Pa
         entries.append(router_module.router_catalog_entry(router_config))
     if chatgpt_passthrough_available():
         entries.extend(chatgpt_passthrough_entries())
-    if cursor_passthrough_available():
-        entry = cursor_catalog_entry()
-        entry["isDefault"] = not chatgpt_passthrough_available()
-        entries.append(entry)
+    # Always publish Cursor Composer entries so Codex Desktop / profile-switcher
+    # can list them from model_catalog_json even before cursor-agent is probed.
+    cursor_entries = cursor_catalog_entries()
+    if not chatgpt_passthrough_available():
+        for entry in cursor_entries:
+            if entry.get("slug") == CURSOR_MODEL_SLUG:
+                entry["isDefault"] = True
+                break
+    entries.extend(cursor_entries)
     entries.extend(catalog_entry(model) for model in usable_byok_models(models))
     payload = {"models": entries}
     path.write_text(json.dumps(payload, indent=2, sort_keys=False) + "\n")
@@ -164,6 +175,8 @@ def _default_context(model: ShimModel) -> int:
 
 
 def _reasoning_effort(model: ShimModel) -> str:
+    if model.no_reasoning:
+        return "none"
     lower = model.display_name.lower()
     if "xhigh" in lower or "x-high" in lower:
         return "xhigh"

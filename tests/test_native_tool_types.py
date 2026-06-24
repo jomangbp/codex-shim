@@ -68,7 +68,11 @@ def test_chat_completion_to_response_apply_patch_custom_tool_call():
 
 
 def test_chat_completion_to_response_web_search_call():
-    """web_search tool type maps to web_search_call output item."""
+    """web_search tool type maps to function_call output item (not web_search_call).
+
+    Codex Desktop in BYOK mode drops function_call_output for web_search_call
+    items, so we emit function_call instead to ensure results are round-tripped.
+    """
     payload = {
         "choices": [
             {
@@ -87,9 +91,9 @@ def test_chat_completion_to_response_web_search_call():
     tool_types = {"web_search": "web_search"}
     response = chat_completion_to_response(payload, "model", tool_types)
     output = response["output"]
-    call_items = [o for o in output if o["type"] in ("function_call", "custom_tool_call", "web_search_call")]
+    call_items = [o for o in output if o["type"] in ("function_call", "custom_tool_call")]
     assert len(call_items) == 1
-    assert call_items[0]["type"] == "web_search_call"
+    assert call_items[0]["type"] == "function_call"
     assert call_items[0]["name"] == "web_search"
 
 
@@ -158,3 +162,116 @@ def test_chat_completion_to_response_no_tool_types_backward_compat():
     call_items = [o for o in output if o["type"] in ("function_call", "custom_tool_call", "web_search_call")]
     assert len(call_items) == 1
     assert call_items[0]["type"] == "function_call"
+
+
+# --- Streaming web search interception tests ---
+
+import asyncio
+from codex_shim.server import ResponsesStreamState
+
+
+def test_streaming_web_search_interception_emits_function_call_output():
+    """When a web_search_call is streamed, finish(intercept_web_search=True)
+    should execute the search and emit function_call_output SSE events with
+    the results, and those results should appear in response.completed output."""
+    tool_types = {"web_search": "web_search"}
+    state = ResponsesStreamState("test-model", tool_types)
+
+    captured: list[dict] = []
+
+    class FakeResponse:
+        async def write(self, data: bytes) -> None:
+            for line in data.decode().splitlines():
+                line = line.strip()
+                if line.startswith("data: ") and line != "data: [DONE]":
+                    try:
+                        captured.append(json.loads(line[6:]))
+                    except json.JSONDecodeError:
+                        pass
+
+    async def run():
+        fake = FakeResponse()
+        await state.start(fake)
+
+        # Simulate a streamed web_search tool call
+        await state.write_chat_delta(fake, {
+            "choices": [{"delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_123",
+                "function": {"name": "web_search", "arguments": '{"query": "test query"}'},
+            }]}}]
+        })
+
+        # Mock the search to avoid network calls
+        import codex_shim.server as srv
+        original = srv._perform_web_search
+        async def mock_search(q):
+            return f"Mock results for: {q}"
+        srv._perform_web_search = mock_search
+        try:
+            await state.finish(fake, intercept_web_search=True)
+        finally:
+            srv._perform_web_search = original
+
+    asyncio.run(run())
+
+    # Check that function_call_output events were emitted
+    added_items = [e for e in captured if e.get("type") == "response.output_item.added"]
+    done_items = [e for e in captured if e.get("type") == "response.output_item.done"]
+    completed = [e for e in captured if e.get("type") == "response.completed"]
+
+    # Find the function_call_output items
+    fco_added = [e for e in added_items if e.get("item", {}).get("type") == "function_call_output"]
+    fco_done = [e for e in done_items if e.get("item", {}).get("type") == "function_call_output"]
+
+    assert len(fco_added) == 1, f"Expected 1 function_call_output added, got {len(fco_added)}"
+    assert len(fco_done) == 1, f"Expected 1 function_call_output done, got {len(fco_done)}"
+    assert fco_added[0]["item"]["call_id"] == "call_123"
+    assert "Mock results for: test query" in fco_added[0]["item"]["output"]
+
+    # Check that response.completed includes the search results in output
+    assert len(completed) == 1
+    output = completed[0]["response"]["output"]
+    fco_in_output = [o for o in output if o.get("type") == "function_call_output"]
+    assert len(fco_in_output) == 1
+    assert fco_in_output[0]["call_id"] == "call_123"
+    assert "Mock results for: test query" in fco_in_output[0]["output"]
+
+
+def test_streaming_no_web_search_no_interception():
+    """When no web_search_call is present, finish(intercept_web_search=True)
+    should not emit any function_call_output items."""
+    tool_types = {"apply_patch": "apply_patch"}
+    state = ResponsesStreamState("test-model", tool_types)
+
+    captured: list[dict] = []
+
+    class FakeResponse:
+        async def write(self, data: bytes) -> None:
+            for line in data.decode().splitlines():
+                line = line.strip()
+                if line.startswith("data: ") and line != "data: [DONE]":
+                    try:
+                        captured.append(json.loads(line[6:]))
+                    except json.JSONDecodeError:
+                        pass
+
+    async def run():
+        fake = FakeResponse()
+        await state.start(fake)
+        # Simulate a normal function call (not web_search)
+        await state.write_chat_delta(fake, {
+            "choices": [{"delta": {"tool_calls": [{
+                "index": 0,
+                "id": "call_456",
+                "function": {"name": "apply_patch", "arguments": '{}'},
+            }]}}]
+        })
+        await state.finish(fake, intercept_web_search=True)
+
+    asyncio.run(run())
+
+    completed = [e for e in captured if e.get("type") == "response.completed"]
+    output = completed[0]["response"]["output"]
+    fco_items = [o for o in output if o.get("type") == "function_call_output"]
+    assert len(fco_items) == 0, f"Expected 0 function_call_output, got {fco_items}"

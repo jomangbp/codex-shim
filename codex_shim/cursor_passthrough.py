@@ -9,12 +9,42 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
+from dataclasses import dataclass
+
 from .translate import responses_to_chat, strip_think
 
-CURSOR_MODEL_SLUG = "composer-2-5"
-CURSOR_UPSTREAM_MODEL = "composer-2.5"
-CURSOR_DISPLAY_NAME = "Composer 2.5"
-CURSOR_PASSTHROUGH_SLUGS = frozenset({CURSOR_MODEL_SLUG, "composer-2.5"})
+
+@dataclass(frozen=True)
+class CursorModel:
+    slug: str
+    upstream: str
+    display_name: str
+    description: str
+    priority: int
+    instructions_name: str
+
+
+CURSOR_MODELS: tuple[CursorModel, ...] = (
+    CursorModel(
+        slug="composer-2-5",
+        upstream="composer-2.5",
+        display_name="Composer 2.5",
+        description="Cursor Composer 2.5 routed through your Cursor subscription (cursor-agent login).",
+        priority=11000,
+        instructions_name="Composer 2.5",
+    ),
+)
+
+CURSOR_MODEL_SLUG = CURSOR_MODELS[0].slug
+CURSOR_UPSTREAM_MODEL = CURSOR_MODELS[0].upstream
+CURSOR_DISPLAY_NAME = CURSOR_MODELS[0].display_name
+
+_CURSOR_MODEL_BY_KEY: dict[str, CursorModel] = {}
+for _model in CURSOR_MODELS:
+    _CURSOR_MODEL_BY_KEY[_model.slug] = _model
+    _CURSOR_MODEL_BY_KEY[_model.upstream] = _model
+
+CURSOR_PASSTHROUGH_SLUGS = frozenset(_CURSOR_MODEL_BY_KEY)
 _AUTH_PROBE_TTL_SEC = 30.0
 _auth_probe_cache: tuple[float, bool] | None = None
 
@@ -96,7 +126,14 @@ def is_cursor_passthrough_slug(slug: str) -> bool:
     return slug in CURSOR_PASSTHROUGH_SLUGS
 
 
-def cursor_upstream_model(_slug: str) -> str:
+def _cursor_model_for_slug(slug: str) -> CursorModel | None:
+    return _CURSOR_MODEL_BY_KEY.get(slug)
+
+
+def cursor_upstream_model(slug: str) -> str:
+    model = _cursor_model_for_slug(slug)
+    if model is not None:
+        return model.upstream
     return CURSOR_UPSTREAM_MODEL
 
 
@@ -106,14 +143,14 @@ def cursor_workspace() -> str:
 
 
 def cursor_passthrough_display_names() -> dict[str, str]:
-    return {CURSOR_MODEL_SLUG: CURSOR_DISPLAY_NAME}
+    return {model.slug: model.display_name for model in CURSOR_MODELS}
 
 
-def cursor_catalog_entry() -> dict[str, Any]:
+def _cursor_catalog_entry(model: CursorModel) -> dict[str, Any]:
     return {
-        "slug": CURSOR_MODEL_SLUG,
-        "display_name": CURSOR_DISPLAY_NAME,
-        "description": "Cursor Composer 2.5 routed through your Cursor subscription (cursor-agent login).",
+        "slug": model.slug,
+        "display_name": model.display_name,
+        "description": model.description,
         "context_window": 272_000,
         "max_context_window": 272_000,
         "auto_compact_token_limit": 217_600,
@@ -142,15 +179,23 @@ def cursor_catalog_entry() -> dict[str, Any]:
         "supported_in_api": True,
         "availability_nux": None,
         "upgrade": None,
-        "priority": 11000,
+        "priority": model.priority,
         "prefer_websockets": False,
         "available_in_plans": ["free", "plus", "pro", "team", "business", "enterprise"],
-        "base_instructions": "You are Codex, a coding agent powered by Composer 2.5.",
+        "base_instructions": f"You are Codex, a coding agent powered by {model.instructions_name}.",
         "model_messages": {
-            "instructions_template": "You are Codex, a coding agent powered by Composer 2.5.",
-            "instructions_variables": {"model_name": CURSOR_DISPLAY_NAME},
+            "instructions_template": f"You are Codex, a coding agent powered by {model.instructions_name}.",
+            "instructions_variables": {"model_name": model.display_name},
         },
     }
+
+
+def cursor_catalog_entries() -> list[dict[str, Any]]:
+    return [_cursor_catalog_entry(model) for model in CURSOR_MODELS]
+
+
+def cursor_catalog_entry() -> dict[str, Any]:
+    return _cursor_catalog_entry(CURSOR_MODELS[0])
 
 
 def build_cursor_prompt(body: dict[str, Any]) -> str:

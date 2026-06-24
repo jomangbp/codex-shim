@@ -24,6 +24,7 @@ from .catalog import _toml_escape, codex_config_overrides, write_catalog, write_
 from .cursor_passthrough import (
     cursor_passthrough_available,
     cursor_passthrough_display_names,
+    cursor_upstream_model,
     is_cursor_passthrough_slug,
 )
 from .settings import (
@@ -169,6 +170,8 @@ def main(argv: list[str] | None = None) -> int:
             generate(args.settings, args.port)
             ensure_started(args.settings, args.port)
             install_codex_config(args.settings, args.port, args.model_slug)
+            # Also keep profile-switcher template in sync so its "shim" profile remembers this.
+            _sync_shim_profile_template(args.model_slug)
             print(f"Active Codex shim model: {args.model_slug}")
             return 0
     if args.command == "codex":
@@ -600,7 +603,7 @@ def list_models(settings_path: Path) -> int:
             rows.append((slug, display_name, slug, "chatgpt"))
     if cursor_passthrough_available():
         for slug, display_name in cursor_passthrough_display_names().items():
-            rows.append((slug, display_name, "composer-2.5", "cursor-subscription"))
+            rows.append((slug, display_name, cursor_upstream_model(slug), "cursor-subscription"))
     rows.extend((model.slug, model.display_name, model.model, model.provider) for model in usable_byok_models(models))
     for model in models:
         if model not in usable_byok_models(models):
@@ -1279,6 +1282,41 @@ def _valid_model_slugs(models, router_config=None) -> set[str]:
     if cursor_passthrough_available():
         slugs.update(cursor_passthrough_display_names())
     return slugs
+
+
+def _sync_shim_profile_template(slug: str) -> None:
+    """Update ~/.codex/shim.config.toml (used by codex-profile-switcher) so that
+    the "shim" profile remembers the model chosen via `codex-shim model use`.
+    This prevents the switcher from forgetting configuration set "in other places".
+    """
+    import re as _re
+    template_path = Path.home() / ".codex" / "shim.config.toml"
+    model_re = _re.compile(r'(?m)^(\s*model\s*=\s*")[^"]*(")')
+    try:
+        if template_path.exists():
+            text = template_path.read_text()
+            new_text = model_re.sub(rf'\g<1>{slug}\g<2>', text, count=1)
+            if new_text != text:
+                template_path.write_text(new_text)
+        else:
+            # create a minimal one matching profile-switcher format
+            text = f'''# >>> codex-profile-switcher managed >>>
+model = "{slug}"
+model_provider = "{PROVIDER_NAME}"
+model_catalog_json = "{CATALOG_PATH}"
+[model_providers.{PROVIDER_NAME}]
+name = "Codex Shim"
+base_url = "http://127.0.0.1:8765/v1"
+wire_api = "responses"
+experimental_bearer_token = "dummy"
+request_max_retries = 3
+stream_max_retries = 3
+stream_idle_timeout_ms = 600000
+# <<< codex-profile-switcher managed <<<
+'''
+            template_path.write_text(text)
+    except Exception as exc:
+        print(f"[shim] could not sync profile switcher template: {exc}", file=sys.stderr)
 
 
 def _healthy(port: int) -> bool:

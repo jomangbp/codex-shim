@@ -27,7 +27,7 @@ def _decode_thinking_blob(encoded: Any) -> dict[str, Any] | None:
     return data
 
 
-def responses_to_chat(body: dict[str, Any], upstream_model: str) -> dict[str, Any]:
+def responses_to_chat(body: dict[str, Any], upstream_model: str, no_reasoning: bool = False) -> dict[str, Any]:
     messages = []
     instructions = body.get("instructions")
     if instructions:
@@ -56,7 +56,15 @@ def responses_to_chat(body: dict[str, Any], upstream_model: str) -> dict[str, An
     _copy_if_present(body, chat, "max_output_tokens", "max_tokens")
     _copy_if_present(body, chat, "max_tokens")
     _copy_if_present(body, chat, "parallel_tool_calls")
-    _copy_if_present(body, chat, "reasoning_effort")
+    if not no_reasoning:
+        _copy_if_present(body, chat, "reasoning_effort")
+        # Clamp xhigh to high for OpenAI-compatible chat endpoints; xhigh is not
+        # part of the standard chat-completions reasoning_effort enum.
+        effort = chat.get("reasoning_effort")
+        if effort == "xhigh":
+            chat["reasoning_effort"] = "high"
+        elif effort == "minimal":
+            chat["reasoning_effort"] = "low"
 
     tools = _responses_tools_to_chat_tools(body.get("tools"))
     if tools:
@@ -315,12 +323,12 @@ def anthropic_to_chat_response(payload: dict[str, Any], requested_model: str) ->
     }
 
 
-def chat_completion_to_response(payload: dict[str, Any], requested_model: str, tool_types: dict[str, str] | None = None) -> dict[str, Any]:
+def chat_completion_to_response(payload: dict[str, Any], requested_model: str, tool_types: dict[str, str] | None = None, no_reasoning: bool = False) -> dict[str, Any]:
     choice = (payload.get("choices") or [{}])[0]
     message = choice.get("message") or {}
     output: list[dict[str, Any]] = []
     reasoning = message.get("reasoning_content")
-    if reasoning:
+    if reasoning and not no_reasoning:
         output.append(
             {
                 "id": "reasoning_0",
@@ -348,8 +356,7 @@ def chat_completion_to_response(payload: dict[str, Any], requested_model: str, t
         item_type = "function_call"
         if original_type == "apply_patch":
             item_type = "custom_tool_call"
-        elif original_type.startswith("web_search"):
-            item_type = "web_search_call"
+        # web_search stays as function_call — see server.py _open_tool comment
         output.append(
             {
                 "id": call.get("id", "call_0"),
@@ -372,7 +379,7 @@ def chat_completion_to_response(payload: dict[str, Any], requested_model: str, t
 
 
 def anthropic_to_response(payload: dict[str, Any], requested_model: str, tool_types: dict[str, str] | None = None) -> dict[str, Any]:
-    response = chat_completion_to_response(anthropic_to_chat_response(payload, requested_model), requested_model, tool_types)
+    response = chat_completion_to_response(anthropic_to_chat_response(payload, requested_model), requested_model, tool_types, no_reasoning=False)
     response["usage"] = normalize_responses_usage(payload.get("usage"))
     return response
 
@@ -483,17 +490,20 @@ def _responses_input_to_messages(value: Any) -> list[dict[str, Any]]:
         elif item_type == "computer_call_output":
             flush_pending_assistant_tool_calls()
             messages.append({"role": "user", "content": _computer_output_to_chat_content(item)})
-        elif item_type == "function_call":
-            # Coalesce consecutive function_call items into a single assistant
-            # message with multiple tool_calls so chat-completions upstreams
-            # accept the subsequent tool messages.
+        elif item_type in {"function_call", "web_search_call"}:
+            # Coalesce consecutive function_call/web_search_call items into a
+            # single assistant message with multiple tool_calls so
+            # chat-completions upstreams accept the subsequent tool messages.
+            # web_search_call is treated identically to function_call — the
+            # shim already executed the search and returned results as a
+            # function_call_output with the same call_id.
             call_id = item.get("call_id") or item.get("id") or "call_0"
             pending_tool_calls.append(
                 {
                     "id": call_id,
                     "type": "function",
                     "function": {
-                        "name": item.get("name") or "",
+                        "name": item.get("name") or "web_search",
                         "arguments": item.get("arguments") or "",
                     },
                 }

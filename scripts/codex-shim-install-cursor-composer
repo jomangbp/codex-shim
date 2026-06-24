@@ -39,7 +39,7 @@ if path.exists():
             if not (
                 isinstance(row, dict)
                 and str(row.get("slug") or row.get("model") or "").replace(".", "-")
-                in {"composer-2-5", "composer-2.5"}
+                in {"composer-2-5", "composer-2.5", "composer-2-5-fast", "composer-2.5-fast"}
             )
         ]
 path.write_text(json.dumps(payload, indent=2) + "\n")

@@ -192,6 +192,53 @@ def test_responses_to_chat_preserves_reasoning_and_effort_for_deepseek():
     ]
 
 
+def test_responses_to_chat_strips_reasoning_effort_when_no_reasoning():
+    """For models that cannot honor reasoning_effort, the shim removes the
+    parameter entirely instead of forwarding it to the upstream endpoint."""
+    body = {
+        "model": "slug",
+        "reasoning_effort": "high",
+        "input": [{"role": "user", "content": "hi"}],
+    }
+    out = responses_to_chat(body, "llama3.2", no_reasoning=True)
+    assert "reasoning_effort" not in out
+
+
+def test_responses_to_chat_clamps_xhigh_and_minimal_effort():
+    """Non-Ollama chat endpoints receive clamped reasoning_effort values because
+    xhigh and minimal are not in the standard OpenAI chat enum."""
+    body_xhigh = {"model": "slug", "reasoning_effort": "xhigh", "input": [{"role": "user", "content": "hi"}]}
+    out_xhigh = responses_to_chat(body_xhigh, "deepseek-reasoner")
+    assert out_xhigh["reasoning_effort"] == "high"
+
+    body_minimal = {"model": "slug", "reasoning_effort": "minimal", "input": [{"role": "user", "content": "hi"}]}
+    out_minimal = responses_to_chat(body_minimal, "deepseek-reasoner")
+    assert out_minimal["reasoning_effort"] == "low"
+
+
+def test_chat_completion_to_response_omits_reasoning_when_no_reasoning():
+    """When no_reasoning is enabled, reasoning fields in the upstream response
+    are omitted from the Codex Desktop response to avoid long thinking bubbles."""
+    payload = {
+        "id": "chatcmpl_no_reason",
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "message": {
+                    "role": "assistant",
+                    "content": "answer",
+                    "reasoning_content": "thinking hard",
+                },
+            }
+        ],
+        "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+    }
+    out = chat_completion_to_response(payload, "slug", no_reasoning=True)
+    assert out["output"][0]["content"][0]["text"] == "answer"
+    # The reasoning item should not appear in the output array.
+    assert not any(item.get("type") == "reasoning" for item in out["output"])
+
+
 def test_responses_to_chat_sanitizes_and_merges_strict_provider_messages():
     body = {
         "model": "slug",
@@ -474,3 +521,66 @@ def test_anthropic_to_response_normalizes_cache_usage():
             "cache_creation_input_tokens": 2,
         },
     }
+
+
+# --- web_search_call round-trip tests ---
+
+def test_responses_input_handles_web_search_call_as_function_call():
+    """web_search_call items in the input should be translated to assistant
+    tool_calls so the upstream chat-completions API sees a valid pairing
+    with the subsequent function_call_output (tool message)."""
+    from codex_shim.translate import _responses_input_to_messages
+
+    input_items = [
+        {"type": "message", "role": "user", "content": "search for OpenAI news"},
+        {"type": "web_search_call", "call_id": "call_ws1", "name": "web_search", "arguments": '{"query": "OpenAI news"}'},
+        {"type": "function_call_output", "call_id": "call_ws1", "output": "OpenAI announced GPT-5"},
+        {"type": "message", "role": "user", "content": "what did it say?"},
+    ]
+    messages = _responses_input_to_messages(input_items)
+
+    # Should produce: user, assistant(tool_calls), tool, user
+    assert len(messages) == 4
+    assert messages[0]["role"] == "user"
+    assert messages[1]["role"] == "assistant"
+    assert messages[1].get("tool_calls")
+    assert messages[1]["tool_calls"][0]["id"] == "call_ws1"
+    assert messages[1]["tool_calls"][0]["function"]["name"] == "web_search"
+    assert messages[1]["tool_calls"][0]["function"]["arguments"] == '{"query": "OpenAI news"}'
+    assert messages[2]["role"] == "tool"
+    assert messages[2]["tool_call_id"] == "call_ws1"
+    assert "OpenAI announced GPT-5" in messages[2]["content"]
+    assert messages[3]["role"] == "user"
+
+
+def test_responses_to_chat_translates_web_search_call_roundtrip():
+    """Full roundtrip: responses_to_chat should convert a conversation
+    containing web_search_call + function_call_output into valid
+    chat-completions messages with matching tool_calls and tool messages."""
+    from codex_shim.translate import responses_to_chat
+
+    body = {
+        "model": "test-model",
+        "input": [
+            {"type": "message", "role": "user", "content": "search for OpenAI"},
+            {"type": "web_search_call", "call_id": "ws_abc", "name": "web_search", "arguments": '{"query": "OpenAI"}'},
+            {"type": "function_call_output", "call_id": "ws_abc", "output": "GPT-5 is here"},
+        ],
+        "tools": [{"type": "web_search"}],
+    }
+    chat = responses_to_chat(body, "test-model")
+    messages = chat["messages"]
+
+    # Find the assistant message with tool_calls
+    assistant_msgs = [m for m in messages if m.get("role") == "assistant" and m.get("tool_calls")]
+    assert len(assistant_msgs) == 1, f"Expected 1 assistant with tool_calls, got {len(assistant_msgs)}"
+    tool_calls = assistant_msgs[0]["tool_calls"]
+    assert len(tool_calls) == 1
+    assert tool_calls[0]["id"] == "ws_abc"
+    assert tool_calls[0]["function"]["name"] == "web_search"
+
+    # Find the tool response message
+    tool_msgs = [m for m in messages if m.get("role") == "tool"]
+    assert len(tool_msgs) == 1, f"Expected 1 tool message, got {len(tool_msgs)}"
+    assert tool_msgs[0]["tool_call_id"] == "ws_abc"
+    assert "GPT-5 is here" in tool_msgs[0]["content"]

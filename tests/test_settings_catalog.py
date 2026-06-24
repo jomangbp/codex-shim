@@ -9,6 +9,7 @@ import pytest
 
 from codex_shim import cli
 from codex_shim.catalog import catalog_entry, write_catalog
+from codex_shim.cursor_passthrough import cursor_catalog_entries
 from codex_shim.opencode_go import opencode_go_model_row, write_opencode_go_models
 from codex_shim.settings import ModelSettings, chatgpt_passthrough_available, FALLBACK_CHATGPT_PASSTHROUGH_SLUGS
 
@@ -285,6 +286,115 @@ def test_ollama_launch_models_schema_loads(tmp_path):
         "http://127.0.0.1:11434/v1",
         "http://localhost:11434/v1",
     ]
+    # Ollama rows default to a placeholder API key so they are usable without
+    # an explicit credential; a user-supplied key is preserved.
+    assert [model.api_key for model in models] == ["ollama", "ollama", "ollama"]
+
+
+def test_ollama_api_key_default_respects_user_override(tmp_path):
+    settings = tmp_path / "ollama-key.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {"model": "llama3.2", "provider": "ollama"},
+                    {"model": "qwen2.5-coder:14b", "provider": "ollama", "api_key": "my-key"},
+                    {"model": "deepseek-r1", "baseURL": "http://localhost:11434/v1", "apiKeyEnv": "UNSET_OLLAMA_KEY"},
+                ]
+            }
+        )
+    )
+    models = ModelSettings(settings).load()
+    assert [model.api_key for model in models] == ["ollama", "my-key", ""]
+
+
+def test_ollama_rows_default_no_reasoning(tmp_path):
+    """Ollama-like rows (local 11434 endpoint or explicit provider) default to
+    no_reasoning=True so Codex Desktop will not advertise reasoning levels that
+    these endpoints typically ignore or implement as long thinking pauses."""
+    settings = tmp_path / "ollama-no-reasoning.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {"model": "llama3.2", "provider": "ollama"},
+                    {"model": "qwen2.5-coder:14b", "provider": "generic-chat-completion-api", "base_url": "http://127.0.0.1:11434/v1"},
+                    {"model": "deepseek-r1", "baseURL": "http://localhost:11434/v1", "noReasoning": False},
+                ]
+            }
+        )
+    )
+    models = ModelSettings(settings).load()
+    assert [model.no_reasoning for model in models] == [True, True, False]
+
+
+def test_catalog_entry_no_reasoning_advertises_none_only():
+    """When a model is marked no_reasoning, its catalog entry must advertise
+    only the 'none' reasoning level and default to 'none'."""
+    from codex_shim.settings import ShimModel
+    model = ShimModel(
+        slug="ollama-model",
+        model="llama3.2",
+        display_name="Llama 3.2",
+        provider="generic-chat-completion-api",
+        base_url="http://127.0.0.1:11434/v1",
+        api_key="ollama",
+        no_reasoning=True,
+    )
+    entry = catalog_entry(model)
+    assert entry["default_reasoning_level"] == "none"
+    assert [level["effort"] for level in entry["supported_reasoning_levels"]] == ["none"]
+
+
+def test_non_ollama_rows_preserve_reasoning_levels():
+    """Regular BYOK models keep the standard reasoning level defaults."""
+    model = ModelSettingsFixture.one()
+    entry = catalog_entry(model)
+    assert entry["default_reasoning_level"] == "medium"
+    assert [level["effort"] for level in entry["supported_reasoning_levels"]] == ["low", "medium", "high", "xhigh"]
+
+
+
+def test_cursor_api_key_not_leaked_to_non_cursor_providers(tmp_path, monkeypatch):
+    settings = tmp_path / "mixed.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {"model": "evil-model", "provider": "generic-chat-completion-api", "base_url": "https://attacker.example.com/v1"},
+                    {"model": "claude-opus", "provider": "anthropic", "base_url": "https://api.anthropic.com/v1"},
+                ]
+            }
+        )
+    )
+    # A fake cursor key file should NOT leak to non-Cursor models.
+    fake_key = tmp_path / "cursor-api-key"
+    fake_key.write_text("super-secret-cursor-key")
+    monkeypatch.setattr("codex_shim.settings.DEFAULT_CURSOR_API_KEY_FILE", fake_key)
+    monkeypatch.setenv("CURSOR_API_KEY", "env-cursor-key")
+
+    models = ModelSettings(settings).load()
+    assert [model.api_key for model in models] == ["", ""]
+
+
+def test_cursor_api_key_fallback_still_available_for_cursor(tmp_path, monkeypatch):
+    settings = tmp_path / "cursor.json"
+    settings.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {"model": "composer-2.5", "provider": "cursor", "base_url": "http://127.0.0.1:1/v1"},
+                ]
+            }
+        )
+    )
+    fake_key = tmp_path / "cursor-api-key"
+    fake_key.write_text("file-cursor-key")
+    monkeypatch.setattr("codex_shim.settings.DEFAULT_CURSOR_API_KEY_FILE", fake_key)
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+
+    models = ModelSettings(settings).load()
+    assert models[0].api_key == "file-cursor-key"
 
 
 def test_catalog_preserves_context_and_visibility():
@@ -361,7 +471,10 @@ def test_write_catalog_omits_gpt55_when_auth_missing(tmp_path, auth_missing):
     catalog_path = tmp_path / "catalog.json"
     write_catalog([], catalog_path)
     data = json.loads(catalog_path.read_text())
-    assert data == {"models": []}
+    # Cursor entries are always published (even without auth); only GPT entries
+    # depend on ChatGPT auth being present.
+    cursor_slugs = [e["slug"] for e in cursor_catalog_entries()]
+    assert [m["slug"] for m in data["models"]] == cursor_slugs
 
 
 def test_write_catalog_includes_gpt_models_when_auth_present(tmp_path, auth_present, monkeypatch):
@@ -370,7 +483,9 @@ def test_write_catalog_includes_gpt_models_when_auth_present(tmp_path, auth_pres
     catalog_path = tmp_path / "catalog.json"
     write_catalog([], catalog_path)
     data = json.loads(catalog_path.read_text())
-    assert [model["slug"] for model in data["models"]] == list(FALLBACK_CHATGPT_PASSTHROUGH_SLUGS)
+    # GPT passthrough slugs plus any always-published cursor entries.
+    cursor_slugs = [e["slug"] for e in cursor_catalog_entries()]
+    assert [model["slug"] for model in data["models"]] == list(FALLBACK_CHATGPT_PASSTHROUGH_SLUGS) + cursor_slugs
 
 
 def test_managed_config_escapes_windows_catalog_path(monkeypatch):

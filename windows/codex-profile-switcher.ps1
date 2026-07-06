@@ -47,17 +47,34 @@ $SHIM_TEMPLATE = Join-Path $CODEX_DIR "shim.config.toml"
 $BACKUP_DIR = Join-Path $CODEX_DIR "profile-switcher-backups"
 
 # Shim paths — in WSL these are Linux paths, in native Windows use forward slashes
-$repoFromScript = Split-Path -Parent $PSScriptRoot
-if (Test-Path (Join-Path $repoFromScript "codex_shim")) {
-  $SHIM_REPO = $repoFromScript
-  $SHIM_CATALOG = Join-Path $SHIM_REPO ".codex-shim\custom_model_catalog.json"
-} elseif ($IsWSL) {
-  $SHIM_REPO = "$HOME_DIR/.local/src/codex-shim"
-  $SHIM_CATALOG = "$SHIM_REPO/.codex-shim/custom_model_catalog.json"
-} else {
-  $SHIM_REPO = Join-Path $HOME_DIR ".local\src\codex-shim"
-  $SHIM_CATALOG = Join-Path $SHIM_REPO ".codex-shim\custom_model_catalog.json"
+$repoCandidates = @()
+$repoHintPath = Join-Path $PSScriptRoot "codex-profile-switcher.repo"
+if (Test-Path $repoHintPath) {
+  $repoHint = (Get-Content $repoHintPath -Raw).Trim()
+  if ($repoHint) { $repoCandidates += $repoHint }
 }
+if ($env:CODEX_SHIM_REPO) {
+  $repoCandidates += $env:CODEX_SHIM_REPO
+}
+$repoCandidates += Split-Path -Parent $PSScriptRoot
+if ($IsWSL) {
+  $repoCandidates += "$HOME_DIR/.local/src/codex-shim"
+} else {
+  $repoCandidates += (Join-Path $HOME_DIR ".local\src\codex-shim")
+}
+
+$SHIM_REPO = $null
+foreach ($candidate in $repoCandidates) {
+  if ($candidate -and (Test-Path (Join-Path $candidate "codex_shim"))) {
+    $SHIM_REPO = $candidate
+    break
+  }
+}
+if (-not $SHIM_REPO) {
+  if ($IsWSL) { $SHIM_REPO = "$HOME_DIR/.local/src/codex-shim" }
+  else { $SHIM_REPO = Join-Path $HOME_DIR ".local\src\codex-shim" }
+}
+$SHIM_CATALOG = Join-Path $SHIM_REPO ".codex-shim\custom_model_catalog.json"
 
 $SHIM_PROVIDER = "codex_shim"
 $SHIM_BASE_URL = "http://127.0.0.1:8765/v1"
@@ -274,6 +291,27 @@ stream_idle_timeout_ms = 600000
   }
 }
 
+function Save-ShimTemplate([string]$Slug) {
+  $shimCatalogToml = Escape-TomlString $SHIM_CATALOG
+  $shimContent = @"
+$MANAGED_BEGIN
+model = "$Slug"
+model_provider = "$SHIM_PROVIDER"
+model_catalog_json = "$shimCatalogToml"
+
+[model_providers.$SHIM_PROVIDER]
+name = "Codex Shim"
+base_url = "$SHIM_BASE_URL"
+wire_api = "responses"
+experimental_bearer_token = "dummy"
+request_max_retries = 3
+stream_max_retries = 3
+stream_idle_timeout_ms = 600000
+$MANAGED_END
+"@
+  Set-Content -Path $SHIM_TEMPLATE -Value $shimContent -NoNewline
+}
+
 function Write-Model([string]$Slug) {
   $text = Read-Config
   $backup = Backup-Config $text
@@ -309,6 +347,7 @@ $CODEX_SHIM_END
 
   $text = Ensure-FullAccess ($modelBlock + "`n`n" + $text.TrimStart() + "`n`n" + $providerBlock + "`n")
   Set-Content -Path $CONFIG -Value $text -NoNewline
+  Save-ShimTemplate $Slug
   Write-Host "Shim model set to: $Slug" -ForegroundColor Green
   Write-Host "(applied to active config.toml)" -ForegroundColor DarkGray
 }
@@ -327,6 +366,19 @@ function Load-Models {
 
   $data = Get-Content $SHIM_CATALOG -Raw | ConvertFrom-Json
   return $data.models | ForEach-Object { @{ slug = $_.slug; display_name = $_.display_name } }
+}
+
+function Get-ValidShimModel([string]$Preferred) {
+  $models = Load-Models
+  $slugs = @($models | ForEach-Object { $_.slug })
+  if ($Preferred -and ($slugs -contains $Preferred)) { return $Preferred }
+
+  $current = Get-CurrentModel
+  if ($current -and ($slugs -contains $current)) { return $current }
+
+  $cloudFallback = $slugs | Where-Object { $_ -like "*-cloud" } | Select-Object -First 1
+  if ($cloudFallback) { return $cloudFallback }
+  return $slugs | Select-Object -First 1
 }
 
 function List-Models([bool]$AsMenu) {
@@ -358,7 +410,7 @@ function Switch-Profile([string]$Profile, [bool]$DoRestart) {
     Ensure-ShimStarted
     # Read shim template and inject
     $shimText = Get-Content $SHIM_TEMPLATE -Raw
-    $model = Get-ShimModel $shimText
+    $model = Get-ValidShimModel (Get-ShimModel $shimText)
     if ($model) {
       Write-Model $model
     } else {

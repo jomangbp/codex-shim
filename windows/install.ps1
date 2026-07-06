@@ -29,6 +29,11 @@ $dest = Join-Path $InstallDir "codex-profile-switcher.ps1"
 Copy-Item -Path $source -Destination $dest -Force
 Write-Host "Installed: $dest" -ForegroundColor Green
 
+$repoRoot = Split-Path -Parent $PSScriptRoot
+$repoHintPath = Join-Path $InstallDir "codex-profile-switcher.repo"
+Set-Content -Path $repoHintPath -Value $repoRoot -NoNewline
+Write-Host "Installed: $repoHintPath" -ForegroundColor Green
+
 # Create a batch launcher for easy invocation from cmd
 $batchContent = "@echo off`r`n" + 'powershell -ExecutionPolicy Bypass -File "' + $dest + '" %*' + "`r`n"
 $batchPath = Join-Path $InstallDir "codex-profile-switcher.bat"
@@ -43,6 +48,7 @@ if (-not $IsWSL) {
   $shortcut = $shell.CreateShortcut($shortcutPath)
   $shortcut.TargetPath = "powershell.exe"
   $shortcut.Arguments = '-ExecutionPolicy Bypass -File "' + $dest + '" gui'
+  $shortcut.WorkingDirectory = $repoRoot
   $shortcut.IconLocation = "shell32.dll,13"
   $shortcut.Description = "Codex Profile Switcher - switch between shim and default profiles"
   $shortcut.Save()

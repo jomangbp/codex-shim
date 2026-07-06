@@ -172,11 +172,61 @@ function Get-ShimModel([string]$Text) {
   return $null
 }
 
+function Get-ProbeModel {
+  $model = $null
+  if (Test-Path $SHIM_TEMPLATE) {
+    $model = Get-ShimModel (Get-Content $SHIM_TEMPLATE -Raw)
+  }
+  if (Test-Path $SHIM_CATALOG) {
+    try {
+      $models = @((Get-Content $SHIM_CATALOG -Raw | ConvertFrom-Json).models)
+      $slugs = @($models | ForEach-Object { $_.slug })
+      if ($model -and ($slugs -contains $model)) { return $model }
+      $cloudFallback = $slugs | Where-Object { $_ -like "*-cloud" } | Select-Object -First 1
+      if ($cloudFallback) { return $cloudFallback }
+      return $slugs | Select-Object -First 1
+    } catch {}
+  }
+  return $model
+}
+
+function Test-ShimProvider {
+  $model = Get-ProbeModel
+  if (-not $model) { return $true }
+  $body = @{
+    model = $model
+    input = "Reply OK"
+    stream = $false
+    max_output_tokens = 8
+  } | ConvertTo-Json -Depth 4
+  try {
+    $null = Invoke-RestMethod -Uri "http://127.0.0.1:8765/v1/responses" -Method Post -Body $body -ContentType "application/json" -Headers @{ Authorization = "Bearer dummy" } -TimeoutSec 30 -ErrorAction Stop
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Stop-ShimOnPort {
+  if ($IsWSL) { return }
+  try {
+    $listeners = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue
+    foreach ($listener in $listeners) {
+      if ($listener.OwningProcess) {
+        Stop-Process -Id $listener.OwningProcess -Force -ErrorAction SilentlyContinue
+      }
+    }
+    Start-Sleep -Seconds 1
+  } catch {}
+}
+
 function Ensure-ShimStarted {
   # Check if shim is running on port 8765
   try {
     $response = Invoke-RestMethod -Uri "http://127.0.0.1:8765/health" -TimeoutSec 3 -ErrorAction Stop
-    if ($response) { return }
+    if ($response -and (Test-ShimProvider)) { return }
+    Write-Host "Shim health check passed but provider probe failed; restarting shim." -ForegroundColor Yellow
+    Stop-ShimOnPort
   } catch {}
 
   # Start the shim
@@ -191,11 +241,17 @@ function Ensure-ShimStarted {
     Start-Process -NoNewWindow -FilePath "python3" -ArgumentList "-m", "codex_shim.server", "--settings", $settingsPath, "--host", "127.0.0.1", "--port", "8765" -WorkingDirectory $SHIM_REPO
   } else {
     $settingsPath = Join-Path $HOME_DIR ".codex-shim\models.json"
+    $runtimeDir = Join-Path $SHIM_REPO ".codex-shim"
+    if (-not (Test-Path $runtimeDir)) {
+      New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
+    }
+    $stdoutLog = Join-Path $runtimeDir "shim.log"
+    $stderrLog = Join-Path $runtimeDir "shim.err.log"
     $venvPython = Join-Path $SHIM_REPO ".venv\Scripts\python.exe"
     if (Test-Path $venvPython) {
-      Start-Process -NoNewWindow -FilePath $venvPython -ArgumentList "-m", "codex_shim.server", "--settings", $settingsPath, "--host", "127.0.0.1", "--port", "8765" -WorkingDirectory $SHIM_REPO
+      Start-Process -WindowStyle Hidden -FilePath $venvPython -ArgumentList "-m", "codex_shim.server", "--settings", $settingsPath, "--host", "127.0.0.1", "--port", "8765" -WorkingDirectory $SHIM_REPO -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
     } else {
-      Start-Process -NoNewWindow -FilePath "python" -ArgumentList "-m", "codex_shim.server", "--settings", $settingsPath, "--host", "127.0.0.1", "--port", "8765" -WorkingDirectory $SHIM_REPO
+      Start-Process -WindowStyle Hidden -FilePath "python" -ArgumentList "-m", "codex_shim.server", "--settings", $settingsPath, "--host", "127.0.0.1", "--port", "8765" -WorkingDirectory $SHIM_REPO -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog
     }
   }
 

@@ -2285,6 +2285,13 @@ class ClientDisconnected(Exception):
     """Raised when the downstream Codex client closes the SSE connection."""
 
 
+def _safe_print(message: str) -> None:
+    try:
+        print(message, flush=True)
+    except (BrokenPipeError, OSError, ValueError):
+        pass
+
+
 def _log_incoming_request(endpoint: str, body: dict[str, Any]) -> None:
     try:
         tools = body.get("tools") or []
@@ -2306,14 +2313,13 @@ def _log_incoming_request(endpoint: str, body: dict[str, Any]) -> None:
                     elif t == "function_call_output":
                         extra = f"(call_id={str(item.get('call_id', ''))[:24]})"
                     input_summary.append(f"{t}{extra}")
-        print(
+        _safe_print(
             f"[req] {endpoint} model={body.get('model')!r} stream={body.get('stream')!r} "
             f"tools={len(tools)} ({names[:8]}) "
-            f"input={len(input_items)} ({input_summary})",
-            flush=True,
+            f"input={len(input_items)} ({input_summary})"
         )
     except Exception as exc:
-        print(f"[req] failed to log: {exc}", flush=True)
+        _safe_print(f"[req] failed to log: {exc}")
 
 
 async def _sse_lines(upstream) -> Any:

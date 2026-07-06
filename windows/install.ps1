@@ -8,7 +8,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "=== Codex Profile Switcher — Windows Installer ===" -ForegroundColor Cyan
+Write-Host "=== Codex Profile Switcher - Windows Installer ===" -ForegroundColor Cyan
 
 # Detect WSL
 $IsWSL = $false
@@ -24,16 +24,13 @@ if (-not (Test-Path $InstallDir)) {
 }
 
 # Copy the PowerShell script
-$source = $PSScriptRoot + "\codex-profile-switcher.ps1"
+$source = Join-Path $PSScriptRoot "codex-profile-switcher.ps1"
 $dest = Join-Path $InstallDir "codex-profile-switcher.ps1"
 Copy-Item -Path $source -Destination $dest -Force
 Write-Host "Installed: $dest" -ForegroundColor Green
 
 # Create a batch launcher for easy invocation from cmd
-$batchContent = @"
-@echo off
-powershell -ExecutionPolicy Bypass -File "$dest" %*
-"@
+$batchContent = "@echo off`r`n" + 'powershell -ExecutionPolicy Bypass -File "' + $dest + '" %*' + "`r`n"
 $batchPath = Join-Path $InstallDir "codex-profile-switcher.bat"
 Set-Content -Path $batchPath -Value $batchContent
 Write-Host "Installed: $batchPath" -ForegroundColor Green
@@ -45,9 +42,9 @@ if (-not $IsWSL) {
   $shell = New-Object -ComObject WScript.Shell
   $shortcut = $shell.CreateShortcut($shortcutPath)
   $shortcut.TargetPath = "powershell.exe"
-  $shortcut.Arguments = "-ExecutionPolicy Bypass -File `"$dest`" gui"
+  $shortcut.Arguments = '-ExecutionPolicy Bypass -File "' + $dest + '" gui'
   $shortcut.IconLocation = "shell32.dll,13"
-  $shortcut.Description = "Codex Profile Switcher — switch between shim and default profiles"
+  $shortcut.Description = "Codex Profile Switcher - switch between shim and default profiles"
   $shortcut.Save()
   Write-Host "Desktop shortcut created: $shortcutPath" -ForegroundColor Green
 }

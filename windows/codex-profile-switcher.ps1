@@ -47,7 +47,11 @@ $SHIM_TEMPLATE = Join-Path $CODEX_DIR "shim.config.toml"
 $BACKUP_DIR = Join-Path $CODEX_DIR "profile-switcher-backups"
 
 # Shim paths — in WSL these are Linux paths, in native Windows use forward slashes
-if ($IsWSL) {
+$repoFromScript = Split-Path -Parent $PSScriptRoot
+if (Test-Path (Join-Path $repoFromScript "codex_shim")) {
+  $SHIM_REPO = $repoFromScript
+  $SHIM_CATALOG = Join-Path $SHIM_REPO ".codex-shim\custom_model_catalog.json"
+} elseif ($IsWSL) {
   $SHIM_REPO = "$HOME_DIR/.local/src/codex-shim"
   $SHIM_CATALOG = "$SHIM_REPO/.codex-shim/custom_model_catalog.json"
 } else {
@@ -111,6 +115,22 @@ function Remove-Section([string]$Text, [string]$Section) {
     if (-not $skipping) { $out += $line }
   }
   return ($out -join "`n")
+}
+
+function Ensure-FullAccess([string]$Text) {
+  $Text = $Text -replace '(?m)^default_permissions\s*=.*\r?\n', ""
+  $Text = $Text -replace '(?m)^sandbox_mode\s*=.*\r?\n', ""
+  $Text = $Text -replace '(?m)^approval_policy\s*=.*\r?\n', ""
+  $fullAccess = @"
+default_permissions = ":danger-full-access"
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+"@
+  return $fullAccess + "`n`n" + $Text.TrimStart()
+}
+
+function Escape-TomlString([string]$Value) {
+  return $Value.Replace("\", "\\").Replace('"', '\"')
 }
 
 function Get-CurrentProfile([string]$Text) {
@@ -191,11 +211,25 @@ function Restart-Codex {
   }
 
   # Restart Codex
+  $codexCommand = Get-Command "codex.cmd" -ErrorAction SilentlyContinue
+  if ($codexCommand) {
+    Write-Host "Starting Codex through $($codexCommand.Source)" -ForegroundColor Green
+    Start-Process -FilePath $codexCommand.Source -ArgumentList @("app") -WorkingDirectory $HOME_DIR
+    return
+  }
+
   $codexPaths = @(
-    Join-Path $env:LOCALAPPDATA "Programs\Codex\Codex.exe",
-    Join-Path $env:PROGRAMFILES "Codex\Codex.exe",
-    Join-Path $HOME_DIR "AppData\Local\Programs\Codex\Codex.exe"
+    (Join-Path $env:LOCALAPPDATA "Programs\Codex\Codex.exe"),
+    (Join-Path $env:PROGRAMFILES "Codex\Codex.exe"),
+    (Join-Path $HOME_DIR "AppData\Local\Programs\Codex\Codex.exe")
   )
+
+  $windowsAppsCodex = Get-ChildItem "$env:ProgramFiles\WindowsApps\OpenAI.Codex_*\app\Codex.exe" -ErrorAction SilentlyContinue |
+    Sort-Object FullName -Descending |
+    Select-Object -First 1
+  if ($windowsAppsCodex) {
+    $codexPaths += $windowsAppsCodex.FullName
+  }
 
   foreach ($path in $codexPaths) {
     if (Test-Path $path) {
@@ -208,20 +242,18 @@ function Restart-Codex {
 }
 
 function Ensure-Templates {
+  $shimCatalogToml = Escape-TomlString $SHIM_CATALOG
   $defaultContent = @"
 # Codex default profile — uses OpenAI ChatGPT subscription
 model = "gpt-5.5"
 model_provider = "openai"
-
-[model_providers.openai]
-name = "OpenAI"
 "@
 
   $shimContent = @"
 # >>> codex-shim managed >>>
 model = "kimi-k2-7-code-cloud"
 model_provider = "codex_shim"
-model_catalog_json = "$SHIM_CATALOG"
+model_catalog_json = "$shimCatalogToml"
 
 [model_providers.codex_shim]
 name = "Codex Shim"
@@ -245,6 +277,7 @@ stream_idle_timeout_ms = 600000
 function Write-Model([string]$Slug) {
   $text = Read-Config
   $backup = Backup-Config $text
+  $shimCatalogToml = Escape-TomlString $SHIM_CATALOG
 
   # Remove existing model and provider lines
   $text = $text -replace '(?m)^model\s*=\s*"[^"]*"\s*\r?\n', ""
@@ -255,7 +288,7 @@ function Write-Model([string]$Slug) {
   $modelBlock = @"
 model = "$Slug"
 model_provider = "$SHIM_PROVIDER"
-model_catalog_json = "$SHIM_CATALOG"
+model_catalog_json = "$shimCatalogToml"
 "@
 
   # Remove old shim managed block and inject new one
@@ -274,7 +307,7 @@ stream_idle_timeout_ms = 600000
 $CODEX_SHIM_END
 "@
 
-  $text = $modelBlock + "`n`n" + $text.TrimStart() + "`n`n" + $providerBlock + "`n"
+  $text = Ensure-FullAccess ($modelBlock + "`n`n" + $text.TrimStart() + "`n`n" + $providerBlock + "`n")
   Set-Content -Path $CONFIG -Value $text -NoNewline
   Write-Host "Shim model set to: $Slug" -ForegroundColor Green
   Write-Host "(applied to active config.toml)" -ForegroundColor DarkGray
@@ -333,15 +366,20 @@ function Switch-Profile([string]$Profile, [bool]$DoRestart) {
       $text = Remove-MarkedBlocks $text $CODEX_SHIM_BEGIN $CODEX_SHIM_END
       $text = Remove-Section $text "model_providers.$SHIM_PROVIDER"
       $text = $text -replace '(?m)^model_provider\s*=.*$', "model_provider = `"$SHIM_PROVIDER`""
+      $text = Ensure-FullAccess $text
       Set-Content -Path $CONFIG -Value $text -NoNewline
     }
     Write-Host "Switched to shim profile." -ForegroundColor Green
   } elseif ($Profile -eq "default") {
     $defaultText = Get-Content $DEFAULT_TEMPLATE -Raw
+    $defaultText = Remove-Section $defaultText "model_providers.openai"
     $text = Remove-MarkedBlocks $text $CODEX_SHIM_BEGIN $CODEX_SHIM_END
     $text = Remove-Section $text "model_providers.$SHIM_PROVIDER"
-    $text = $text -replace '(?m)^model_provider\s*=.*$', ""
-    $text = $defaultText + "`n" + $text
+    $text = Remove-Section $text "model_providers.openai"
+    $text = $text -replace '(?m)^model\s*=\s*"[^"]*"\s*\r?\n', ""
+    $text = $text -replace '(?m)^model_provider\s*=\s*"[^"]*"\s*\r?\n', ""
+    $text = $text -replace '(?m)^model_catalog_json\s*=\s*"[^"]*"\s*\r?\n', ""
+    $text = Ensure-FullAccess ($defaultText + "`n" + $text)
     Set-Content -Path $CONFIG -Value $text -NoNewline
     Write-Host "Switched to default profile." -ForegroundColor Green
   }

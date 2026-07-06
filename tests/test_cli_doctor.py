@@ -22,8 +22,8 @@ def doctor_safe_environment(monkeypatch, tmp_path):
     monkeypatch.delenv("CODEX_SHIM_DISABLE_CHATGPT", raising=False)
     monkeypatch.delenv("CODEX_SHIM_DISABLE_CURSOR", raising=False)
     monkeypatch.delenv("CODEX_SHIM_DISABLE_ROUTER", raising=False)
-    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost,::1")
     monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost,::1")
     monkeypatch.setattr(cli.importlib.util, "find_spec", lambda name: object())
     monkeypatch.setattr(cli.shutil, "which", lambda command: None)
     monkeypatch.setattr(cli, "_health", lambda port: None)
@@ -167,8 +167,8 @@ def test_missing_api_key_is_warn(tmp_path, capsys):
 
 def test_no_proxy_complete_is_ok(monkeypatch, tmp_path, capsys):
     settings = _settings(tmp_path / "models.json", [])
-    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost,::1")
     monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost,::1")
 
     code = cli.main(["--settings", str(settings), "doctor"])
 

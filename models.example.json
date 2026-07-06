@@ -1,0 +1,250 @@
+{
+  "models": [
+    {
+      "model": "kimi-k2.7-code:cloud",
+      "displayName": "kimi-k2.7-code:cloud",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "apiKey": "ollama",
+      "provider": "generic-chat-completion-api",
+      "maxOutputTokens": 131072,
+      "noImageSupport": true,
+      "index": 0,
+      "id": "custom:kimi-k2.7-code:cloud-0"
+    },
+    {
+      "model": "minimax-m3:cloud",
+      "displayName": "minimax-m3:cloud",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "apiKey": "ollama",
+      "provider": "generic-chat-completion-api",
+      "maxOutputTokens": 131072,
+      "noImageSupport": true,
+      "index": 1,
+      "id": "custom:minimax-m3:cloud-1"
+    },
+    {
+      "model": "kimi-k2.6:cloud",
+      "displayName": "kimi-k2.6:cloud",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "apiKey": "ollama",
+      "provider": "generic-chat-completion-api",
+      "maxOutputTokens": 131072,
+      "noImageSupport": true,
+      "index": 2,
+      "id": "custom:kimi-k2.6:cloud-2"
+    },
+    {
+      "model": "deepseek-v4-pro:cloud",
+      "displayName": "deepseek-v4-pro:cloud",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "apiKey": "ollama",
+      "provider": "generic-chat-completion-api",
+      "maxOutputTokens": 131072,
+      "noImageSupport": true,
+      "index": 3,
+      "id": "custom:deepseek-v4-pro:cloud-3"
+    },
+    {
+      "model": "deepseek-v4-flash:cloud",
+      "displayName": "deepseek-v4-flash:cloud",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "apiKey": "ollama",
+      "provider": "generic-chat-completion-api",
+      "maxOutputTokens": 131072,
+      "noImageSupport": true,
+      "index": 4,
+      "id": "custom:deepseek-v4-flash:cloud-4"
+    },
+    {
+      "model": "gpt-oss:120b-cloud",
+      "displayName": "gpt-oss:120b-cloud",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "apiKey": "ollama",
+      "provider": "generic-chat-completion-api",
+      "maxOutputTokens": 131072,
+      "noImageSupport": true,
+      "index": 5,
+      "id": "custom:gpt-oss:120b-cloud-5"
+    },
+    {
+      "model": "MiniMax-M2.7",
+      "displayName": "MiniMax M2.7",
+      "baseUrl": "https://api.minimax.io/anthropic",
+      "apiKey": "YOUR_MINIMAX_API_KEY",
+      "provider": "anthropic",
+      "maxOutputTokens": 64000,
+      "noImageSupport": false,
+      "index": 6,
+      "id": "custom:MiniMax-M2.7-0"
+    },
+    {
+      "model": "MiniMax-M2.5",
+      "displayName": "MiniMax M2.5",
+      "baseUrl": "https://api.minimax.io/anthropic",
+      "apiKey": "YOUR_MINIMAX_API_KEY",
+      "provider": "anthropic",
+      "maxOutputTokens": 64000,
+      "noImageSupport": false,
+      "index": 7,
+      "id": "custom:MiniMax-M2.5-1"
+    },
+    {
+      "model": "MiniMax-M2.1",
+      "displayName": "MiniMax M2.1",
+      "baseUrl": "https://api.minimax.io/anthropic",
+      "apiKey": "YOUR_MINIMAX_API_KEY",
+      "provider": "anthropic",
+      "maxOutputTokens": 64000,
+      "noImageSupport": false,
+      "index": 8,
+      "id": "custom:MiniMax-M2.1-2"
+    },
+    {
+      "model": "MiniMax-M2",
+      "displayName": "MiniMax M2",
+      "baseUrl": "https://api.minimax.io/anthropic",
+      "apiKey": "YOUR_MINIMAX_API_KEY",
+      "provider": "anthropic",
+      "maxOutputTokens": 64000,
+      "noImageSupport": false,
+      "index": 9,
+      "id": "custom:MiniMax-M2-3"
+    },
+    {
+      "model": "glm-5.1",
+      "displayName": "GLM-5.1 [Z.AI]",
+      "baseUrl": "https://api.z.ai/api/anthropic",
+      "apiKey": "YOUR_ZAI_API_KEY",
+      "provider": "anthropic",
+      "maxOutputTokens": 131072,
+      "noImageSupport": false,
+      "index": 10,
+      "id": "custom:glm-5.1-4"
+    },
+    {
+      "model": "glm-5",
+      "displayName": "GLM-5 [Z.AI]",
+      "baseUrl": "https://api.z.ai/api/anthropic",
+      "apiKey": "YOUR_ZAI_API_KEY",
+      "provider": "anthropic",
+      "maxOutputTokens": 131072,
+      "noImageSupport": false,
+      "index": 11,
+      "id": "custom:glm-5-5"
+    },
+    {
+      "model": "glm-5-turbo",
+      "displayName": "GLM-5 Turbo [Z.AI]",
+      "baseUrl": "https://api.z.ai/api/anthropic",
+      "apiKey": "YOUR_ZAI_API_KEY",
+      "provider": "anthropic",
+      "maxOutputTokens": 131072,
+      "noImageSupport": false,
+      "index": 12,
+      "id": "custom:glm-5-turbo-6"
+    },
+    {
+      "model": "glm-4.7",
+      "displayName": "GLM-4.7 [Z.AI]",
+      "baseUrl": "https://api.z.ai/api/anthropic",
+      "apiKey": "YOUR_ZAI_API_KEY",
+      "provider": "anthropic",
+      "maxOutputTokens": 131072,
+      "noImageSupport": false,
+      "index": 13,
+      "id": "custom:glm-4.7-7"
+    },
+    {
+      "model": "glm-4.6",
+      "displayName": "GLM-4.6 [Z.AI]",
+      "baseUrl": "https://api.z.ai/api/anthropic",
+      "apiKey": "YOUR_ZAI_API_KEY",
+      "provider": "anthropic",
+      "maxOutputTokens": 131072,
+      "noImageSupport": false,
+      "index": 14,
+      "id": "custom:glm-4.6-8"
+    },
+    {
+      "model": "glm-4.5",
+      "displayName": "GLM-4.5 [Z.AI]",
+      "baseUrl": "https://api.z.ai/api/anthropic",
+      "apiKey": "YOUR_ZAI_API_KEY",
+      "provider": "anthropic",
+      "maxOutputTokens": 131072,
+      "noImageSupport": false,
+      "index": 15,
+      "id": "custom:glm-4.5-9"
+    },
+    {
+      "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+      "displayName": "NVIDIA Nemotron 3 Ultra 550B A55B (OpenRouter Free)",
+      "baseUrl": "https://openrouter.ai/api/v1",
+      "apiKey": "YOUR_OPENROUTER_API_KEY",
+      "provider": "generic-chat-completion-api",
+      "maxOutputTokens": 131072,
+      "noImageSupport": true,
+      "index": 16,
+      "id": "custom:nvidia-nemotron-3-ultra-550b-a55b-free-10"
+    },
+    {
+      "model": "gemma-4-12b-it-Q4_K_M.gguf",
+      "displayName": "Gemma 4 12B IT (llama.cpp)",
+      "baseUrl": "http://127.0.0.1:18086/v1",
+      "apiKey": "local",
+      "provider": "generic-chat-completion-api",
+      "maxOutputTokens": 2048,
+      "maxContextLimit": 32768,
+      "autoCompactTokenLimit": 20000,
+      "noImageSupport": false,
+      "index": 17,
+      "id": "custom:gemma-4-12b-it-Q4-K-M-gguf-11"
+    },
+    {
+      "model": "glm-5.2:cloud",
+      "displayName": "glm-5.2:cloud",
+      "baseUrl": "http://127.0.0.1:11434/v1",
+      "apiKey": "ollama",
+      "provider": "generic-chat-completion-api",
+      "maxOutputTokens": 131072,
+      "noImageSupport": true,
+      "index": 18,
+      "id": "custom:glm-5.2-10"
+    },
+    {
+      "model": "grok-3",
+      "displayName": "Grok 3 (xAI via OAuth)",
+      "baseUrl": "https://api.x.ai/v1",
+      "provider": "generic-chat-completion-api",
+      "maxOutputTokens": 131072,
+      "noImageSupport": false,
+      "index": 50,
+      "apiKeyCommand": "python3 -c 'import sys; sys.path.insert(0, \"PATH_TO_XAI_GROK_PLUGIN\"); from mcp_server import _access_token; print(_access_token(no_browser=True))'"
+    },
+    {
+      "model": "grok-build-0.1",
+      "displayName": "Grok (xAI build via OAuth)",
+      "baseUrl": "https://api.x.ai/v1",
+      "provider": "generic-chat-completion-api",
+      "maxOutputTokens": 131072,
+      "noImageSupport": false,
+      "index": 51,
+      "apiKeyCommand": "python3 -c 'import sys; sys.path.insert(0, \"PATH_TO_XAI_GROK_PLUGIN\"); from mcp_server import _access_token; print(_access_token(no_browser=True))'"
+    },
+    {
+      "slug": "composer-2-5-fast",
+      "model": "grok-composer-2.5-fast",
+      "displayName": "Composer 2.5 Fast (xAI via OAuth)",
+      "baseUrl": "https://cli-chat-proxy.grok.com/v1",
+      "provider": "generic-chat-completion-api",
+      "maxOutputTokens": 131072,
+      "noImageSupport": false,
+      "index": 52,
+      "extraHeaders": {
+        "x-grok-client-version": "0.2.60",
+        "x-grok-client-identifier": "grok-cli"
+      },
+      "apiKeyCommand": "python3 -c 'import sys; sys.path.insert(0, \"PATH_TO_XAI_GROK_PLUGIN\"); from mcp_server import _access_token; print(_access_token(no_browser=True))'"
+    }
+  ]
+}

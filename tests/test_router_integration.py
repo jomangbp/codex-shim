@@ -473,7 +473,8 @@ async def test_garbage_classifier_output_falls_back_to_default(tmp_path):
 # ---------------------------------------------------------------------------
 # Discovery gating
 # ---------------------------------------------------------------------------
-async def test_health_count_excludes_virtual_auto_model(tmp_path):
+async def test_health_count_excludes_virtual_auto_model(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_SHIM_DISABLE_CLINE", "1")
     state = {}
     upstream = await make_upstream(state)
     shim = await _shim(_settings(tmp_path, str(upstream.make_url("/v1"))))

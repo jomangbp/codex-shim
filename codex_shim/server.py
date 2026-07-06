@@ -25,6 +25,13 @@ from .cursor_passthrough import (
     is_cursor_passthrough_slug,
     iter_cursor_agent_events,
 )
+from .cline_passthrough import (
+    cline_passthrough_available,
+    cline_passthrough_display_names,
+    cline_upstream_model,
+    is_cline_passthrough_slug,
+    iter_cline_chat_events,
+)
 from . import router as router_module
 from .hostguard import build_allowed_hosts, host_guard_middleware
 from .settings import (
@@ -126,6 +133,16 @@ class ShimServer:
                         "active": current == slug,
                     }
                 )
+        if cline_passthrough_available():
+            for slug, display_name in cline_passthrough_display_names().items():
+                data.append(
+                    {
+                        "slug": slug,
+                        "display_name": display_name,
+                        "provider": "cline-subscription",
+                        "active": current == slug,
+                    }
+                )
         for m in usable_byok_models(self.settings.load()):
             data.append(
                 {
@@ -179,6 +196,8 @@ class ShimServer:
         passthrough_count = len(chatgpt_passthrough_slugs()) if chatgpt_ok else 0
         if cursor_ok:
             passthrough_count += len(cursor_passthrough_display_names())
+        if cline_passthrough_available():
+            passthrough_count += len(cline_passthrough_display_names())
         count = len(models) + passthrough_count
         return web.json_response(
             {
@@ -186,6 +205,7 @@ class ShimServer:
                 "models": count,
                 "chatgpt_passthrough": chatgpt_ok,
                 "cursor_passthrough": cursor_ok,
+                "cline_passthrough": cline_passthrough_available(),
                 "auto_router": self._active_router() is not None,
             }
         )
@@ -212,6 +232,9 @@ class ShimServer:
                 for slug in sorted(cursor_passthrough_display_names())
             )
         data.extend({"id": model.slug, "object": "model", "created": now, "owned_by": "codex-shim"} for model in usable_byok_models(self.settings.load()))
+        if cline_passthrough_available():
+            for slug in cline_passthrough_display_names():
+                data.append({"id": slug, "object": "model", "created": now, "owned_by": "codex-shim"})
         return web.json_response({"object": "list", "data": data})
 
     async def chat_completions(self, request: web.Request) -> web.StreamResponse:
@@ -262,6 +285,12 @@ class ShimServer:
                 response_model_override=model,
                 upstream_model=cursor_upstream_model(model),
             )
+        if is_cline_passthrough_slug(model):
+            return await self._cline_passthrough(
+                request,
+                body,
+                response_model_override=model,
+            )
         if self._needs_image_gen(body) or self._needs_image_followup(body):
             return await self._chatgpt_passthrough(request, body, response_model_override=model)
         route = self._route(body)
@@ -295,6 +324,19 @@ class ShimServer:
                 compact_body,
                 response_model_override=model,
                 upstream_model=cursor_upstream_model(model),
+                force_non_stream=True,
+            )
+        if is_cline_passthrough_slug(model):
+            compact_body = dict(body)
+            compact_body["input"] = body.get("input") or []
+            compact_body["instructions"] = (
+                f"{body.get('instructions') or ''}\n\nSummarize the conversation above into a compact "
+                "context window suitable for continuing the task."
+            ).strip()
+            return await self._cline_passthrough(
+                request,
+                compact_body,
+                response_model_override=model,
                 force_non_stream=True,
             )
         route = self._route(body)
@@ -604,20 +646,22 @@ class ShimServer:
                     usage = event.get("usage") if isinstance(event.get("usage"), dict) else None
                 elif event["type"] == "error":
                     raise web.HTTPBadGateway(text=str(event.get("message") or "cursor-agent failed"))
+            output: list[dict[str, Any]] = []
+            if text:
+                output.append({
+                    "id": "msg_0",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": text, "annotations": []}],
+                })
+            output.extend(tool_call_items)
             payload: dict[str, Any] = {
                 "id": f"resp_{int(time.time() * 1000)}",
                 "object": "response",
                 "model": slug,
                 "status": "completed",
-                "output": [
-                    {
-                        "id": "msg_0",
-                        "type": "message",
-                        "status": "completed",
-                        "role": "assistant",
-                        "content": [{"type": "output_text", "text": text, "annotations": []}],
-                    }
-                ],
+                "output": output,
             }
             normalized_usage = normalize_responses_usage(usage)
             if normalized_usage:
@@ -652,6 +696,125 @@ class ShimServer:
             pass
         except Exception as exc:
             print(f"[err] cursor passthrough {slug}: {exc}", flush=True)
+            raise web.HTTPBadGateway(text=str(exc)) from exc
+        try:
+            await response.write_eof()
+        except Exception:
+            pass
+        return response
+
+    async def _cline_passthrough(
+        self,
+        request: web.Request,
+        body: dict[str, Any],
+        response_model_override: str | None = None,
+        force_non_stream: bool = False,
+    ) -> web.StreamResponse:
+        """Route ClinePass models through the Cline subscription API."""
+        if not cline_passthrough_available():
+            raise web.HTTPUnauthorized(
+                text="Cline subscription auth unavailable. Run `cline auth cline`, then retry."
+            )
+        slug = response_model_override or str(body.get("model") or "")
+        upstream = cline_upstream_model(slug)
+        stream = bool(body.get("stream")) and not force_non_stream
+
+        if not stream:
+            text = ""
+            usage: dict[str, Any] | None = None
+            tool_call_items: list[dict[str, Any]] = []
+            async for event in iter_cline_chat_events(body, upstream):
+                if event["type"] == "completed":
+                    text = str(event.get("text") or text)
+                elif event["type"] == "tool_call":
+                    tc = event.get("tool_call") or {}
+                    fn = tc.get("function") or {}
+                    tool_types_local = _build_tool_types(body)
+                    name = fn.get("name", "")
+                    original_type = tool_types_local.get(name, "")
+                    item_type = "function_call"
+                    if original_type == "apply_patch":
+                        item_type = "custom_tool_call"
+                    elif original_type.startswith("web_search"):
+                        item_type = "web_search_call"
+                    tool_call_items.append({
+                        "id": tc.get("id", f"call_{len(tool_call_items)}"),
+                        "type": item_type,
+                        "status": "completed",
+                        "call_id": tc.get("id", f"call_{len(tool_call_items)}"),
+                        "name": name,
+                        "arguments": fn.get("arguments", ""),
+                    })
+                elif event["type"] == "usage":
+                    usage = event.get("usage") if isinstance(event.get("usage"), dict) else None
+                elif event["type"] == "error":
+                    raise web.HTTPBadGateway(text=str(event.get("message") or "cline API failed"))
+            output: list[dict[str, Any]] = []
+            if text:
+                output.append({
+                    "id": "msg_0",
+                    "type": "message",
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": text, "annotations": []}],
+                })
+            output.extend(tool_call_items)
+            payload: dict[str, Any] = {
+                "id": f"resp_{int(time.time() * 1000)}",
+                "object": "response",
+                "model": slug,
+                "status": "completed",
+                "output": output,
+            }
+            normalized_usage = normalize_responses_usage(usage)
+            if normalized_usage:
+                payload["usage"] = normalized_usage
+            return web.json_response(payload)
+
+        response = _sse_response()
+        await response.prepare(request)
+        tool_types = _build_tool_types(body)
+        state = ResponsesStreamState(slug, tool_types)
+        try:
+            await state.start(response)
+            async for event in iter_cline_chat_events(body, upstream):
+                if event["type"] == "text_delta":
+                    await state.write_chat_delta(
+                        response,
+                        {"choices": [{"delta": {"content": event["delta"]}}]},
+                    )
+                elif event["type"] == "tool_call":
+                    tc = event.get("tool_call") or {}
+                    fn = tc.get("function") or {}
+                    delta_tc = {
+                        "index": 0,
+                        "id": tc.get("id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": fn.get("name", ""),
+                            "arguments": fn.get("arguments", ""),
+                        },
+                    }
+                    await state.write_chat_delta(
+                        response,
+                        {"choices": [{"delta": {"tool_calls": [delta_tc]}}]},
+                    )
+                elif event["type"] == "usage":
+                    normalized_usage = normalize_responses_usage(event.get("usage"))
+                    if normalized_usage:
+                        state.usage = normalized_usage
+                elif event["type"] == "error":
+                    message = str(event.get("message") or "cline API failed")
+                    await state.write_chat_delta(
+                        response,
+                        {"choices": [{"delta": {"content": message}}]},
+                    )
+                    break
+            await state.finish(response)
+        except ClientDisconnected:
+            pass
+        except Exception as exc:
+            print(f"[err] cline passthrough {slug}: {exc}", flush=True)
             raise web.HTTPBadGateway(text=str(exc)) from exc
         try:
             await response.write_eof()

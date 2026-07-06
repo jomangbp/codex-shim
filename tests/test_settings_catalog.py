@@ -17,6 +17,7 @@ from codex_shim.settings import ModelSettings, chatgpt_passthrough_available, FA
 @pytest.fixture
 def auth_present(monkeypatch, tmp_path):
     """Point chatgpt_passthrough_available() at a valid stub auth.json."""
+    monkeypatch.setenv("CODEX_SHIM_DISABLE_CLINE", "1")
     auth = tmp_path / "auth.json"
     auth.write_text(json.dumps({"tokens": {"access_token": "stub", "account_id": "acct"}}))
     monkeypatch.setattr("codex_shim.settings.DEFAULT_CODEX_AUTH", auth)
@@ -26,6 +27,7 @@ def auth_present(monkeypatch, tmp_path):
 @pytest.fixture
 def auth_missing(monkeypatch, tmp_path):
     """Point chatgpt_passthrough_available() at a path that does not exist."""
+    monkeypatch.setenv("CODEX_SHIM_DISABLE_CLINE", "1")
     monkeypatch.setattr("codex_shim.settings.DEFAULT_CODEX_AUTH", tmp_path / "missing-auth.json")
 
 

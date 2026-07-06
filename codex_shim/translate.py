@@ -58,6 +58,12 @@ def responses_to_chat(body: dict[str, Any], upstream_model: str, no_reasoning: b
     _copy_if_present(body, chat, "parallel_tool_calls")
     if not no_reasoning:
         _copy_if_present(body, chat, "reasoning_effort")
+        # Codex Desktop sends reasoning configuration as `reasoning.effort` in the
+        # Responses API body; translate it to the chat-completions `reasoning_effort`
+        # key expected by Ollama-style endpoints.
+        reasoning = body.get("reasoning") or {}
+        if isinstance(reasoning, dict) and reasoning.get("effort") is not None:
+            chat["reasoning_effort"] = reasoning["effort"]
         # Clamp xhigh to high for OpenAI-compatible chat endpoints; xhigh is not
         # part of the standard chat-completions reasoning_effort enum.
         effort = chat.get("reasoning_effort")

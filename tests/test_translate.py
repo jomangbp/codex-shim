@@ -216,6 +216,18 @@ def test_responses_to_chat_clamps_xhigh_and_minimal_effort():
     assert out_minimal["reasoning_effort"] == "low"
 
 
+def test_responses_to_chat_reads_nested_reasoning_effort():
+    """Codex Desktop sends reasoning effort as `reasoning.effort`; the shim must
+    translate it to the top-level `reasoning_effort` key for chat-completions."""
+    body = {
+        "model": "slug",
+        "reasoning": {"effort": "high"},
+        "input": [{"role": "user", "content": "hi"}],
+    }
+    out = responses_to_chat(body, "glm-5.2:cloud")
+    assert out["reasoning_effort"] == "high"
+
+
 def test_chat_completion_to_response_omits_reasoning_when_no_reasoning():
     """When no_reasoning is enabled, reasoning fields in the upstream response
     are omitted from the Codex Desktop response to avoid long thinking bubbles."""

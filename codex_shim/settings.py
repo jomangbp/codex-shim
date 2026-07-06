@@ -431,6 +431,7 @@ def _int_or_none(value: Any) -> int | None:
 
 def default_model_slug(models: list[ShimModel], include_chatgpt: bool | None = None) -> str:
     from .cursor_passthrough import CURSOR_MODEL_SLUG, cursor_passthrough_available
+    from .cline_passthrough import cline_passthrough_available, cline_passthrough_slugs
 
     if include_chatgpt is None:
         include_chatgpt = chatgpt_passthrough_available()
@@ -439,11 +440,14 @@ def default_model_slug(models: list[ShimModel], include_chatgpt: bool | None = N
     usable = usable_byok_models(models)
     if usable:
         return usable[0].slug
+    if cline_passthrough_available() and cline_passthrough_slugs():
+        return sorted(cline_passthrough_slugs())[0]
     if cursor_passthrough_available():
         return CURSOR_MODEL_SLUG
     raise ValueError(
         "No usable codex-shim models: add models to ~/.codex-shim/models.json, run `codex login`, "
-        "run `cursor-agent login`, or unset CODEX_SHIM_DISABLE_CHATGPT / CODEX_SHIM_DISABLE_CURSOR."
+        "run `cursor-agent login`, run `cline auth cline`, or unset "
+        "CODEX_SHIM_DISABLE_CHATGPT / CODEX_SHIM_DISABLE_CURSOR / CODEX_SHIM_DISABLE_CLINE."
     )
 
 
@@ -453,15 +457,18 @@ def usable_byok_models(models: list[ShimModel]) -> list[ShimModel]:
 
 def available_model_slugs(models: list[ShimModel]) -> set[str]:
     """Every model slug the shim can route to right now: usable BYOK models plus
-    any available ChatGPT/Cursor passthrough slugs. Used by the Auto Router to
+    any available ChatGPT/Cursor/Cline passthrough slugs. Used by the Auto Router to
     keep routing to candidates that actually exist."""
     from .cursor_passthrough import cursor_passthrough_available, cursor_passthrough_display_names
+    from .cline_passthrough import cline_passthrough_available, cline_passthrough_display_names
 
     slugs = {model.slug for model in usable_byok_models(models)}
     if chatgpt_passthrough_available():
         slugs |= chatgpt_passthrough_slugs()
     if cursor_passthrough_available():
         slugs |= set(cursor_passthrough_display_names())
+    if cline_passthrough_available():
+        slugs |= set(cline_passthrough_display_names())
     return slugs
 
 

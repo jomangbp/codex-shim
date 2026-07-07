@@ -9,6 +9,7 @@ import pytest
 
 from codex_shim import cli
 from codex_shim.catalog import catalog_entry, write_catalog
+from codex_shim.cline_passthrough import cline_catalog_entries
 from codex_shim.cursor_passthrough import cursor_catalog_entries
 from codex_shim.opencode_go import opencode_go_model_row, write_opencode_go_models
 from codex_shim.settings import ModelSettings, chatgpt_passthrough_available, FALLBACK_CHATGPT_PASSTHROUGH_SLUGS
@@ -488,6 +489,20 @@ def test_write_catalog_includes_gpt_models_when_auth_present(tmp_path, auth_pres
     # GPT passthrough slugs plus any always-published cursor entries.
     cursor_slugs = [e["slug"] for e in cursor_catalog_entries()]
     assert [model["slug"] for model in data["models"]] == list(FALLBACK_CHATGPT_PASSTHROUGH_SLUGS) + cursor_slugs
+
+
+def test_write_catalog_includes_cline_models_before_auth(tmp_path, auth_missing, monkeypatch):
+    monkeypatch.delenv("CODEX_SHIM_DISABLE_CLINE", raising=False)
+    monkeypatch.setenv("CLINE_SETTINGS_PATH", str(tmp_path / "missing-providers.json"))
+    monkeypatch.setattr("codex_shim.cline_passthrough._model_cache", None)
+
+    catalog_path = tmp_path / "catalog.json"
+    write_catalog([], catalog_path)
+    data = json.loads(catalog_path.read_text())
+
+    slugs = [model["slug"] for model in data["models"]]
+    for slug in [entry["slug"] for entry in cline_catalog_entries()]:
+        assert slug in slugs
 
 
 def test_managed_config_escapes_windows_catalog_path(monkeypatch):

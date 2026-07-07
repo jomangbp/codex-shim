@@ -69,6 +69,10 @@ def _read_cline_auth() -> dict[str, Any] | None:
     return auth
 
 
+def cline_passthrough_enabled() -> bool:
+    return os.environ.get("CODEX_SHIM_DISABLE_CLINE", "").lower() not in {"1", "true", "yes", "on"}
+
+
 def _read_full_cline_config() -> dict[str, Any] | None:
     """Read the full providers.json file."""
     path = _cline_settings_path()
@@ -176,7 +180,7 @@ def cline_passthrough_available() -> bool:
     Returns True even when the access token is expired, as long as a refresh
     token exists — the token will be auto-refreshed on next use.
     """
-    if os.environ.get("CODEX_SHIM_DISABLE_CLINE", "").lower() in {"1", "true", "yes", "on"}:
+    if not cline_passthrough_enabled():
         return False
     auth = _read_cline_auth()
     if auth is None:

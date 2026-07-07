@@ -15,7 +15,7 @@ from .settings import (
     usable_byok_models,
 )
 from .cursor_passthrough import CURSOR_MODEL_SLUG, cursor_catalog_entries, cursor_passthrough_available
-from .cline_passthrough import cline_catalog_entries, cline_passthrough_available
+from .cline_passthrough import cline_catalog_entries, cline_passthrough_enabled
 
 
 PLAN_TIERS = ["free", "plus", "pro", "team", "business", "enterprise"]
@@ -119,8 +119,9 @@ def write_catalog(models: list[ShimModel], path: Path, router_config=None) -> Pa
                 entry["isDefault"] = True
                 break
     entries.extend(cursor_entries)
-    # Publish ClinePass entries if cline is authenticated
-    if cline_passthrough_available():
+    # Publish ClinePass entries so Codex Desktop / profile-switcher can list
+    # them before auth; requests still fail loudly until `cline auth cline`.
+    if cline_passthrough_enabled():
         entries.extend(cline_catalog_entries())
     entries.extend(catalog_entry(model) for model in usable_byok_models(models))
     payload = {"models": entries}
